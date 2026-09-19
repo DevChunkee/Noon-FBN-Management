@@ -15,8 +15,15 @@
     --amber:#E8A33D; --green:#4FB286; --blue:#5B8DEF; --red:#D9736E;
     --mono: 'IBM Plex Mono', ui-monospace, monospace;
     --sans: 'IBM Plex Sans', system-ui, sans-serif;
+    color-scheme: dark; /* tells the browser to draw native pickers (date
+      calendar popup, etc.) in a dark variant instead of black-on-black */
   }
   *{box-sizing:border-box;}
+  input[type=date]{position:relative;}
+  input[type=date]::-webkit-calendar-picker-indicator{
+    filter: invert(1) brightness(1.6); cursor:pointer; /* the calendar icon
+      was rendering near-invisible (dark icon on our dark background) */
+  }
   body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;}
   .app{display:flex;min-height:100vh;}
 
@@ -460,6 +467,25 @@ async function ensureCatalog(){
 }
 async function ensureSalesOrders(){
   return apiGet('salesOrder');
+}
+// Global supplier lead time (weeks) from the settings table — used to
+// auto-fill Expected Delivery on a new PO when it's left blank. This is a
+// single app-wide assumption, not a per-item/per-supplier figure: there's
+// no completed PO history yet to compute a real average lead time from, so
+// this is the same default the Restock internal planner already assumes.
+let settingsCache = null;
+async function getSettings(){
+  if(settingsCache) return settingsCache;
+  const client = ensureClient();
+  const { data, error } = await client.from('settings').select('*').limit(1).single();
+  if(error) throw new Error(error.message);
+  settingsCache = data;
+  return data;
+}
+function addDays(dateStr, days){
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + Math.round(days));
+  return d.toISOString().slice(0,10);
 }
 
 function readFileAsWorkbook(file){
@@ -1464,47 +1490,81 @@ async function renderPurchaseOrders(){
   $main.innerHTML = viewHead('Purchase Orders', 'Orders placed with your suppliers to restock Internal WH. Click one to view or add its items.') + panelShell('loading');
   try{
     const rows = await apiGet('purchaseOrder');
-    const nextNum = await apiGet('nextPONumber').catch(() => ({number:''}));
     const body = rows.length ? rows.slice().reverse().map(r => `
       <tr class="clickRow" data-po="${r.PONumber}">
         <td class="sku">${r.PONumber}</td><td>${r.PODate||''}</td><td>${r.Supplier||''}</td>
         <td class="num">${fmt(r.TotalUnits)}</td><td class="num">${fmt(r.TotalCost)}</td><td>${r.Status||''}</td>
       </tr>`).join('') : '';
     setPanel(`
-      <div class="panel-head"><h3>Create a new Purchase Order</h3></div>
-      <form class="form" id="newPOForm">
-        <div class="field"><label>PO number</label><input type="text" name="poNumber" value="${nextNum.number||''}" required></div>
-        <div class="field"><label>PO date</label><input type="date" name="poDate" value="${today()}" required></div>
-        <div class="field"><label>Supplier</label><input type="text" name="supplier"></div>
-        <div class="field"><label>Expected delivery</label><input type="date" name="expectedDelivery"></div>
-        <div class="form-foot"><button class="btn primary" type="submit">Create & open</button><span class="msg" id="newPOMsg"></span></div>
-      </form>`);
-    const listPanel = document.createElement('div');
-    listPanel.className = 'panel';
-    listPanel.innerHTML = `
       <div class="panel-head"><h3>${rows.length} order${rows.length===1?'':'s'}</h3>
-        <button class="btn" onclick="refreshAll()">Refresh</button></div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn primary" id="newPOBtn">Create new Purchase Order</button>
+          <button class="btn" onclick="refreshAll()">Refresh</button>
+        </div></div>
       ${rows.length ? `<table>
         <thead><tr><th>PO</th><th>Date</th><th>Supplier</th><th>Units</th><th>Cost</th><th>Status</th></tr></thead>
-        <tbody>${body}</tbody></table>` : emptyState('No purchase orders yet — create one above.')}`;
-    document.getElementById('main').appendChild(listPanel);
-
+        <tbody>${body}</tbody></table>` : emptyState('No purchase orders yet — click "Create new Purchase Order" above.')}
+    `);
     document.querySelectorAll('tr.clickRow[data-po]').forEach(tr => {
       tr.style.cursor = 'pointer';
       tr.onclick = () => { state.selectedPO = tr.dataset.po; renderPurchaseOrderDetail(); };
     });
-    document.getElementById('newPOForm').onsubmit = async (ev) => {
-      ev.preventDefault();
-      const f = Object.fromEntries(new FormData(ev.target));
-      const msg = document.getElementById('newPOMsg');
-      msg.className='msg'; msg.textContent='Creating…';
-      try{
-        await apiPost('createPurchaseOrder', f);
-        state.selectedPO = f.poNumber;
-        renderPurchaseOrderDetail();
-      }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
-    };
+    document.getElementById('newPOBtn').onclick = openCreatePOModal;
   }catch(e){ setPanel(errorState(e)); }
+}
+
+async function openCreatePOModal(){
+  const [nextNum, catalog] = await Promise.all([
+    apiGet('nextPONumber').catch(() => ({number:''})),
+    ensureCatalog()
+  ]);
+  const suppliers = Array.from(new Set(catalog.map(c => c.Supplier).filter(v => v))).sort();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'createPOOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="panel-head"><h3>Create a new Purchase Order</h3></div>
+      <form class="form" id="newPOForm">
+        <div class="field"><label>PO number</label><input type="text" name="poNumber" value="${nextNum.number||''}" required></div>
+        <div class="field"><label>PO date</label><input type="date" name="poDate" value="${today()}" required></div>
+        <div class="field"><label>Supplier</label>
+          <input type="text" name="supplier" list="poSupplierList" placeholder="Type or pick a supplier" autocomplete="off">
+          <datalist id="poSupplierList">${suppliers.map(s => `<option value="${s.replace(/"/g,'&quot;')}">`).join('')}</datalist>
+        </div>
+        <div class="field"><label>Expected delivery</label>
+          <input type="date" name="expectedDelivery">
+        </div>
+        <div class="field span2" style="font-size:11.5px;color:var(--text-dim);">
+          Leave Expected delivery blank to auto-fill it from PO date + the standard supplier lead time (set in Settings/planner assumptions).
+        </div>
+        <div class="form-foot">
+          <button class="btn primary" type="submit">Create & open</button>
+          <button class="btn" type="button" id="createPOCancelBtn">Cancel</button>
+          <span class="msg" id="newPOMsg"></span>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('createPOOverlay'); };
+  document.getElementById('createPOCancelBtn').onclick = () => closeModalOverlay('createPOOverlay');
+  document.getElementById('newPOForm').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = Object.fromEntries(new FormData(ev.target));
+    const msg = document.getElementById('newPOMsg');
+    msg.className='msg'; msg.textContent='Creating…';
+    try{
+      if(!f.expectedDelivery){
+        const settings = await getSettings();
+        const weeks = Number(settings.supplier_lead_time_weeks || 3);
+        f.expectedDelivery = addDays(f.poDate, weeks * 7);
+      }
+      await apiPost('createPurchaseOrder', f);
+      state.selectedPO = f.poNumber;
+      closeModalOverlay('createPOOverlay');
+      renderPurchaseOrderDetail();
+    }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+  };
 }
 
 async function renderPurchaseOrderDetail(){
