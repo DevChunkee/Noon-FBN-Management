@@ -156,6 +156,8 @@
     <div class="nav-item" data-view="report-sales"><span class="nav-dot"></span>Sales Report</div>
     <div class="nav-item" data-view="report-fillrate"><span class="nav-dot"></span>Supplier Fill Rate</div>
     <div class="nav-item" data-view="report-insights"><span class="nav-dot"></span>Product Insights</div>
+    <div class="nav-section">Configurations</div>
+    <div class="nav-item" data-view="suppliers"><span class="nav-dot"></span>Suppliers</div>
     <div class="nav-item" data-view="settings"><span class="nav-dot"></span>Settings</div>
     <div class="rail-foot">
       <div class="conn" id="connStatus"><span class="conn-dot"></span><span id="connLabel">not connected</span></div>
@@ -278,6 +280,8 @@ const FIELD_MAPS = {
     qty_damaged:'QtyDamaged', notes:'Notes' },
   weeklyStockLog: { week_ending:'WeekEnding', zsku:'zSKU', saleable_qty:'SaleableQty' },
   adjustmentLog: { adj_date:'Date', type:'Type', zsku:'zSKU', qty:'Qty', reason:'Reason' },
+  suppliers: { id:'Id', name:'Name', contact_name:'ContactName', phone:'Phone', email:'Email',
+    lead_time_weeks:'LeadTimeWeeks', notes:'Notes', status:'Status' },
 };
 
 function remap(row, map){
@@ -298,6 +302,7 @@ const TABLES = {
   purchaseOrder: 'v_purchase_orders', purchaseOrderLine: 'v_purchase_order_lines',
   replenishmentPlanner: 'v_replenishment_planner', internalReplenishment: 'v_internal_wh_replenishment',
   grnLog: 'grn_log', weeklyStockLog: 'weekly_saleable_stock_log', adjustmentLog: 'inventory_adjustments',
+  suppliers: 'suppliers',
 };
 
 async function apiGetRaw(action){
@@ -433,8 +438,40 @@ async function apiPost(action, payload){
       const { error } = await client.from('sales_funnel_log').insert(rows);
       if(error) throw new Error(error.message); result = { added: rows.length }; break;
     }
+    case 'addSupplier': {
+      const { error } = await client.from('suppliers').insert({
+        name: payload.name, contact_name: payload.contactName || null, phone: payload.phone || null,
+        email: payload.email || null, lead_time_weeks: payload.leadTimeWeeks ? Number(payload.leadTimeWeeks) : null,
+        notes: payload.notes || null
+      });
+      if(error) throw new Error(error.code === '23505' ? 'A supplier with that name already exists.' : error.message);
+      result = { ok:true }; break;
+    }
+    case 'updateSupplier': {
+      const { error } = await client.from('suppliers').update({
+        name: payload.name, contact_name: payload.contactName || null, phone: payload.phone || null,
+        email: payload.email || null, lead_time_weeks: payload.leadTimeWeeks ? Number(payload.leadTimeWeeks) : null,
+        notes: payload.notes || null
+      }).eq('id', payload.id);
+      if(error) throw new Error(error.code === '23505' ? 'A supplier with that name already exists.' : error.message);
+      result = { ok:true }; break;
+    }
+    case 'archiveSupplier': {
+      const { error } = await client.from('suppliers').update({ status: 'Archived' }).eq('id', payload.id);
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'unarchiveSupplier': {
+      const { error } = await client.from('suppliers').update({ status: 'Active' }).eq('id', payload.id);
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'deleteSupplier': {
+      const { error } = await client.from('suppliers').delete().eq('id', payload.id);
+      if(error) throw new Error(error.code === '23503' ? 'This supplier is referenced by existing records and can\'t be deleted — archive it instead.' : error.message);
+      result = { ok:true }; break;
+    }
     default: throw new Error('Unknown action: ' + action);
   }
+  if(action.toLowerCase().includes('supplier')) suppliersCache = null;
   invalidateCache();
   return result;
 }
@@ -467,6 +504,57 @@ async function ensureCatalog(){
 }
 async function ensureSalesOrders(){
   return apiGet('salesOrder');
+}
+// Suppliers list — used by the Suppliers configuration page and shared by
+// the Master Catalog and Purchase Order supplier fields so they always
+// offer the same, single source of truth instead of free-text guesses.
+let suppliersCache = null;
+async function ensureSuppliers(force){
+  if(!force && suppliersCache) return suppliersCache;
+  suppliersCache = await apiGet('suppliers', force);
+  return suppliersCache;
+}
+function activeSupplierNames(list){
+  return Array.from(new Set(list.filter(s => s.Status !== 'Archived').map(s => s.Name).filter(Boolean))).sort();
+}
+// Renders a Supplier text field with a datalist of known suppliers attached,
+// plus a hidden "Invalid Supplier" message. Used by any form (Master Catalog
+// add/edit, Purchase Order create) that needs a supplier picked from the
+// Suppliers list rather than typed freely.
+function supplierFieldHtml(value, suppliers){
+  const opts = suppliers.map(s => `<option value="${s.replace(/"/g,'&quot;')}">`).join('');
+  return `<div class="field"><label>Supplier</label>
+    <input type="text" name="supplier" class="supplier-input" list="supplierOptionsList" placeholder="Type or pick a supplier" autocomplete="off" value="${(value||'').replace(/"/g,'&quot;')}">
+    <datalist id="supplierOptionsList">${opts}</datalist>
+    <span class="msg err supplier-err" style="display:none;">Invalid Supplier</span>
+  </div>`;
+}
+// Wires blur/input/Enter validation for a .supplier-input inside `formEl`.
+// Returns { validate } so the caller's onsubmit can block submission when
+// the typed text doesn't match a known (active) supplier. An empty field is
+// always considered valid — the field is optional.
+function wireSupplierField(formEl, suppliers){
+  const input = formEl.querySelector('.supplier-input');
+  const err = formEl.querySelector('.supplier-err');
+  if(!input) return { validate: () => true };
+  const lower = new Map(suppliers.map(s => [s.toLowerCase(), s]));
+  function validate(){
+    const v = input.value.trim();
+    if(!v){ err.style.display = 'none'; input.style.borderColor = ''; return true; }
+    const match = lower.get(v.toLowerCase());
+    if(!match){ err.style.display = ''; input.style.borderColor = 'var(--red)'; return false; }
+    input.value = match;
+    err.style.display = 'none'; input.style.borderColor = '';
+    return true;
+  }
+  input.addEventListener('blur', validate);
+  input.addEventListener('input', () => { if(err.style.display !== 'none') validate(); });
+  formEl.addEventListener('keydown', (e) => {
+    if(e.key !== 'Enter' || e.target.tagName === 'TEXTAREA') return;
+    e.preventDefault();
+    if(e.target === input) validate();
+  });
+  return { validate };
 }
 // Global supplier lead time (weeks) from the settings table — used to
 // auto-fill Expected Delivery on a new PO when it's left blank. This is a
@@ -608,6 +696,7 @@ async function render(){
   if(v === 'report-sales') return renderSalesReport();
   if(v === 'report-fillrate') return renderFillRateReport();
   if(v === 'report-insights') return renderProductInsights();
+  if(v === 'suppliers') return renderSuppliers();
   if(v === 'settings') return renderSettings();
 }
 
@@ -873,7 +962,8 @@ function closeModalOverlay(id){
   if(overlay) overlay.remove();
 }
 
-function openCatalogAddModal(){
+async function openCatalogAddModal(){
+  const supplierNames = activeSupplierNames(await ensureSuppliers());
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'catalogAddOverlay';
@@ -886,7 +976,7 @@ function openCatalogAddModal(){
         <div class="field span2"><label>Item name</label><input type="text" name="itemName" required></div>
         <div class="field"><label>Barcode</label><input type="text" name="barcode"></div>
         <div class="field"><label>Brand</label><input type="text" name="brand"></div>
-        <div class="field"><label>Supplier</label><input type="text" name="supplier"></div>
+        ${supplierFieldHtml('', supplierNames)}
         <div class="field"><label>MOQ</label><input type="number" name="moq" min="0"></div>
         <div class="field"><label>Cost</label><input type="number" name="cost" step="0.01" min="0" required></div>
         <div class="field"><label>Price</label><input type="number" name="price" step="0.01" min="0" required></div>
@@ -902,8 +992,11 @@ function openCatalogAddModal(){
   document.body.appendChild(overlay);
   overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('catalogAddOverlay'); };
   document.getElementById('catalogAddCancelBtn').onclick = () => closeModalOverlay('catalogAddOverlay');
-  document.getElementById('catalogForm').onsubmit = async (ev) => {
+  const catalogForm = document.getElementById('catalogForm');
+  const supplierField = wireSupplierField(catalogForm, supplierNames);
+  catalogForm.onsubmit = async (ev) => {
     ev.preventDefault();
+    if(!supplierField.validate()){ catalogForm.querySelector('.supplier-input').focus(); return; }
     const f = new FormData(ev.target);
     const msg = document.getElementById('catalogMsg');
     msg.className='msg'; msg.textContent='Saving…';
@@ -990,9 +1083,10 @@ function closeCatalogEditModal(){
   const overlay = document.getElementById('catalogEditOverlay');
   if(overlay) overlay.remove();
 }
-function openCatalogEditModal(zsku){
+async function openCatalogEditModal(zsku){
   const c = state.catalog.find(x => x.zSKU === zsku);
   if(!c) return;
+  const supplierNames = activeSupplierNames(await ensureSuppliers());
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'catalogEditOverlay';
@@ -1005,7 +1099,7 @@ function openCatalogEditModal(zsku){
         <div class="field span2"><label>Item name</label><input type="text" name="itemName" value="${(c.ItemName||'').replace(/"/g,'&quot;')}" required></div>
         <div class="field"><label>Barcode</label><input type="text" name="barcode" value="${c.Barcode||''}"></div>
         <div class="field"><label>Brand</label><input type="text" name="brand" value="${c.Brand||''}"></div>
-        <div class="field"><label>Supplier</label><input type="text" name="supplier" value="${c.Supplier||''}"></div>
+        ${supplierFieldHtml(c.Supplier||'', supplierNames)}
         <div class="field"><label>MOQ</label><input type="number" name="moq" min="0" value="${c.MOQ||0}"></div>
         <div class="field"><label>Cost</label><input type="number" name="cost" step="0.01" min="0" value="${c.Cost||0}" required></div>
         <div class="field"><label>Price</label><input type="number" name="price" step="0.01" min="0" value="${c.Price||0}" required></div>
@@ -1027,8 +1121,11 @@ function openCatalogEditModal(zsku){
   document.body.appendChild(overlay);
   overlay.onclick = (e) => { if(e.target === overlay) closeCatalogEditModal(); };
   document.getElementById('catalogEditCancelBtn').onclick = closeCatalogEditModal;
-  document.getElementById('catalogEditForm').onsubmit = async (ev) => {
+  const catalogEditForm = document.getElementById('catalogEditForm');
+  const supplierField = wireSupplierField(catalogEditForm, supplierNames);
+  catalogEditForm.onsubmit = async (ev) => {
     ev.preventDefault();
+    if(!supplierField.validate()){ catalogEditForm.querySelector('.supplier-input').focus(); return; }
     const f = Object.fromEntries(new FormData(ev.target));
     const msg = document.getElementById('catalogEditMsg');
     msg.className = 'msg'; msg.textContent = 'Saving…';
@@ -1514,11 +1611,12 @@ async function renderPurchaseOrders(){
 }
 
 async function openCreatePOModal(){
-  const [nextNum, catalog] = await Promise.all([
+  const [nextNum, supplierRows] = await Promise.all([
     apiGet('nextPONumber').catch(() => ({number:''})),
-    ensureCatalog()
+    ensureSuppliers()
   ]);
-  const suppliers = Array.from(new Set(catalog.map(c => c.Supplier).filter(v => v))).sort();
+  const suppliers = activeSupplierNames(supplierRows);
+  const leadTimeByName = new Map(supplierRows.map(s => [s.Name, s.LeadTimeWeeks]));
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'createPOOverlay';
@@ -1529,14 +1627,15 @@ async function openCreatePOModal(){
         <div class="field"><label>PO number</label><input type="text" name="poNumber" value="${nextNum.number||''}" required></div>
         <div class="field"><label>PO date</label><input type="date" name="poDate" value="${today()}" required></div>
         <div class="field"><label>Supplier</label>
-          <input type="text" name="supplier" list="poSupplierList" placeholder="Type or pick a supplier" autocomplete="off">
+          <input type="text" name="supplier" id="poSupplierInput" list="poSupplierList" placeholder="Type or pick a supplier" autocomplete="off">
           <datalist id="poSupplierList">${suppliers.map(s => `<option value="${s.replace(/"/g,'&quot;')}">`).join('')}</datalist>
+          <span class="msg err" id="poSupplierErr" style="display:none;">Invalid Supplier</span>
         </div>
         <div class="field"><label>Expected delivery</label>
           <input type="date" name="expectedDelivery">
         </div>
         <div class="field span2" style="font-size:11.5px;color:var(--text-dim);">
-          Leave Expected delivery blank to auto-fill it from PO date + the standard supplier lead time (set in Settings/planner assumptions).
+          Leave Expected delivery blank to auto-fill it from PO date + that supplier's lead time (set on the Suppliers page), or the standard planner lead time if the supplier has none set.
         </div>
         <div class="form-foot">
           <button class="btn primary" type="submit">Create & open</button>
@@ -1548,15 +1647,42 @@ async function openCreatePOModal(){
   document.body.appendChild(overlay);
   overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('createPOOverlay'); };
   document.getElementById('createPOCancelBtn').onclick = () => closeModalOverlay('createPOOverlay');
+  const poForm = document.getElementById('newPOForm');
+  const supplierInput = document.getElementById('poSupplierInput');
+  const supplierErr = document.getElementById('poSupplierErr');
+  const supplierLower = new Map(suppliers.map(s => [s.toLowerCase(), s]));
+  function validateSupplier(){
+    const v = supplierInput.value.trim();
+    if(!v){ supplierErr.style.display = 'none'; supplierInput.style.borderColor = ''; return true; }
+    const match = supplierLower.get(v.toLowerCase());
+    if(!match){ supplierErr.style.display = ''; supplierInput.style.borderColor = 'var(--red)'; return false; }
+    supplierInput.value = match; // normalize casing to the real supplier name
+    supplierErr.style.display = 'none'; supplierInput.style.borderColor = '';
+    return true;
+  }
+  supplierInput.addEventListener('blur', validateSupplier);
+  supplierInput.addEventListener('input', () => { if(supplierErr.style.display !== 'none') validateSupplier(); });
+  // Enter key inside a text field shouldn't submit the form — only the
+  // "Create & open" button should. But Enter is also the natural way people
+  // try to "confirm" the supplier field, so run validation right here too —
+  // otherwise pressing Enter on a bad supplier just does nothing and looks
+  // like the error message is broken.
+  poForm.addEventListener('keydown', (e) => {
+    if(e.key !== 'Enter' || e.target.tagName === 'TEXTAREA') return;
+    e.preventDefault();
+    if(e.target === supplierInput) validateSupplier();
+  });
   document.getElementById('newPOForm').onsubmit = async (ev) => {
     ev.preventDefault();
+    if(!validateSupplier()){ supplierInput.focus(); return; }
     const f = Object.fromEntries(new FormData(ev.target));
     const msg = document.getElementById('newPOMsg');
     msg.className='msg'; msg.textContent='Creating…';
     try{
       if(!f.expectedDelivery){
-        const settings = await getSettings();
-        const weeks = Number(settings.supplier_lead_time_weeks || 3);
+        const supplierWeeks = f.supplier ? leadTimeByName.get(f.supplier) : null;
+        let weeks = Number(supplierWeeks);
+        if(!weeks){ const settings = await getSettings(); weeks = Number(settings.supplier_lead_time_weeks || 3); }
         f.expectedDelivery = addDays(f.poDate, weeks * 7);
       }
       await apiPost('createPurchaseOrder', f);
@@ -2231,6 +2357,100 @@ async function renderProductInsights(){
         : emptyState('Import Log Monthly Sales and Weekly Stock Update data first — this report needs both.')}
     `);
   }catch(e){ setPanel(errorState(e)); }
+}
+
+// Suppliers configuration page — the single source of truth for the
+// supplier list used by Master Catalog and Purchase Order forms.
+async function renderSuppliers(){
+  $main.innerHTML = viewHead('Suppliers', 'Add, edit, archive or delete suppliers. Master Catalog and Purchase Order supplier fields draw from this list.') + panelShell('loading');
+  let rows;
+  try{ rows = await ensureSuppliers(true); }
+  catch(e){ setPanel(errorState(e)); return; }
+  rows = rows.slice().sort((a,b) => (a.Name||'').localeCompare(b.Name||''));
+  const rowsHtml = rows.map(s => `
+    <tr data-id="${s.Id}">
+      <td>${s.Name||''}</td>
+      <td>${s.ContactName||''}</td>
+      <td>${s.Phone||''}</td>
+      <td>${s.Email||''}</td>
+      <td class="num">${s.LeadTimeWeeks ?? ''}</td>
+      <td>${s.Status === 'Archived' ? '<span class="chip">Archived</span>' : '<span class="chip green">Active</span>'}</td>
+      <td style="white-space:normal;max-width:220px;font-size:12px;color:var(--text-dim);">${s.Notes||''}</td>
+      <td style="white-space:nowrap;">
+        <button class="btn" data-act="edit">Edit</button>
+        <button class="btn" data-act="${s.Status === 'Archived' ? 'unarchive' : 'archive'}">${s.Status === 'Archived' ? 'Unarchive' : 'Archive'}</button>
+        <button class="btn" data-act="delete" style="color:var(--red);">Delete</button>
+      </td>
+    </tr>`).join('');
+  setPanel(`
+    <div class="panel-head"><h3>${rows.length} supplier${rows.length===1?'':'s'}</h3>
+      <button class="btn primary" id="supplierAddBtn">Add supplier</button></div>
+    ${rows.length ? `<table><thead><tr><th>Name</th><th>Contact</th><th>Phone</th><th>Email</th><th>Lead time (wks)</th><th>Status</th><th>Notes</th><th></th></tr></thead>
+      <tbody>${rowsHtml}</tbody></table>`
+      : emptyState('No suppliers yet — add one to start populating the Master Catalog and Purchase Order supplier fields.')}
+  `);
+  document.getElementById('supplierAddBtn').onclick = () => openSupplierModal(null);
+  document.querySelectorAll('#panelBody tr[data-id] button[data-act]').forEach(btn => {
+    btn.onclick = async () => {
+      const tr = btn.closest('tr');
+      const id = tr.dataset.id;
+      const s = rows.find(r => String(r.Id) === String(id));
+      const act = btn.dataset.act;
+      if(act === 'edit') return openSupplierModal(s);
+      if(act === 'archive' || act === 'unarchive'){
+        try{ await apiPost(act === 'archive' ? 'archiveSupplier' : 'unarchiveSupplier', { id }); renderSuppliers(); }
+        catch(e){ alert(e.message); }
+        return;
+      }
+      if(act === 'delete'){
+        if(!confirm(`Delete supplier "${s.Name}"? This can't be undone.`)) return;
+        try{ await apiPost('deleteSupplier', { id }); renderSuppliers(); }
+        catch(e){ alert(e.message); }
+      }
+    };
+  });
+}
+function openSupplierModal(s){
+  const isEdit = !!s;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'supplierOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="panel-head"><h3>${isEdit ? 'Edit supplier' : 'Add supplier'}</h3></div>
+      <form class="form" id="supplierForm">
+        <div class="field span2"><label>Name</label><input type="text" name="name" required value="${isEdit ? (s.Name||'').replace(/"/g,'&quot;') : ''}"></div>
+        <div class="field"><label>Contact name</label><input type="text" name="contactName" value="${isEdit ? (s.ContactName||'').replace(/"/g,'&quot;') : ''}"></div>
+        <div class="field"><label>Phone</label><input type="text" name="phone" value="${isEdit ? (s.Phone||'').replace(/"/g,'&quot;') : ''}"></div>
+        <div class="field"><label>Email</label><input type="email" name="email" value="${isEdit ? (s.Email||'').replace(/"/g,'&quot;') : ''}"></div>
+        <div class="field"><label>Lead time (weeks)</label><input type="number" name="leadTimeWeeks" min="0" step="0.5" value="${isEdit && s.LeadTimeWeeks != null ? s.LeadTimeWeeks : ''}"></div>
+        <div class="field span2"><label>Notes</label><textarea name="notes" rows="3">${isEdit ? (s.Notes||'') : ''}</textarea></div>
+        <div class="form-foot">
+          <button class="btn primary" type="submit">${isEdit ? 'Save' : 'Add supplier'}</button>
+          <button class="btn" type="button" id="supplierCancelBtn">Cancel</button>
+          <span class="msg" id="supplierMsg"></span>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('supplierOverlay'); };
+  document.getElementById('supplierCancelBtn').onclick = () => closeModalOverlay('supplierOverlay');
+  const supplierForm = document.getElementById('supplierForm');
+  supplierForm.addEventListener('keydown', (e) => {
+    if(e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') e.preventDefault();
+  });
+  supplierForm.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = Object.fromEntries(new FormData(ev.target));
+    const msg = document.getElementById('supplierMsg');
+    msg.className='msg'; msg.textContent='Saving…';
+    try{
+      if(isEdit) await apiPost('updateSupplier', Object.assign(f, { id: s.Id }));
+      else await apiPost('addSupplier', f);
+      msg.className='msg ok'; msg.textContent='Saved.';
+      setTimeout(() => { closeModalOverlay('supplierOverlay'); renderSuppliers(); }, 400);
+    }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+  };
 }
 
 // No Project URL / key fields here on purpose — the connection is baked into
