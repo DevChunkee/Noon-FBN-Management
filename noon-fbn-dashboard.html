@@ -611,6 +611,14 @@ function catalogLabel(zsku, catalog){
   const c = catalog.find(x => x.zSKU === zsku);
   return c ? `${c.SKU} — ${c.ItemName}` : zsku;
 }
+// "[Barcode] - Item name" — used on SO/PO line item tables. The lines
+// themselves don't carry barcode/item name, so this looks them up from the
+// already-loaded catalog by zSKU. Falls back gracefully if either is missing.
+function barcodeItemLabel(zsku, catalog){
+  const c = catalog.find(x => x.zSKU === zsku);
+  if(!c) return '';
+  return c.Barcode ? `[${c.Barcode}] - ${c.ItemName||''}` : (c.ItemName||'');
+}
 
 // Exports an array of row-objects as a downloadable .xlsx file, triggered
 // via a temporary object URL — works the same for a full table or a filtered
@@ -1499,15 +1507,19 @@ async function renderSalesOrderDetail(){
     const isCancelled = header && header.Cancelled === 'Yes';
     const lineChip = (s) => s === 'Matched' ? `<span class="chip green">Matched</span>` :
       s === 'Mismatch' ? `<span class="chip red">Mismatch</span>` : s ? `<span class="chip amber">${s}</span>` : '—';
-    const rowsHtml = myLines.map(l => `
-      <tr><td class="sku">${l.SKU}</td><td>${l.ItemName}</td>
+    const rowsHtml = myLines.map(l => {
+      const c = catalog.find(x => x.zSKU === l.zSKU) || {};
+      const confirmedVal = (l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined) ? l.ConfirmedQty : l.QtySent;
+      return `
+      <tr><td class="sku">${c.SKU||''}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td>
         <td class="num">${fmt(l.QtySent)}</td>
-        <td class="num">${l.ConfirmedQty!==''&&l.ConfirmedQty!==undefined?fmt(l.ConfirmedQty):'—'}</td>
+        <td class="num">${fmt(confirmedVal)}</td>
         <td class="num" style="font-weight:600;">${fmt(l.EffectiveQty)}</td>
         <td class="num">${fmt(l.QtyReceived)}</td>
         <td class="num">${fmt(l.QtyDamaged)}</td><td class="num">${fmt(l.Discrepancy)}</td>
         <td>${lineChip(l.LineStatus)}</td>
-        <td style="font-size:11.5px;color:var(--text-dim);">${l.ShortageReason||''}</td></tr>`).join('');
+        <td style="font-size:11.5px;color:var(--text-dim);">${l.ShortageReason||''}</td></tr>`;
+    }).join('');
 
     setPanel(`
       <div class="panel-head"><h3>Order summary</h3>
@@ -1529,7 +1541,7 @@ async function renderSalesOrderDetail(){
     linesPanel.innerHTML = `
       <div class="panel-head"><h3>${myLines.length} line item(s)</h3>
         ${myLines.length ? exportBtnHtml('soExportBtn','Export lines') : ''}</div>
-      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item</th><th class="num">Planned</th><th class="num">Confirmed</th><th class="num">Effective</th><th class="num">Received</th><th class="num">Damaged</th><th class="num">Discrepancy</th><th>Status</th><th>Shortage reason</th></tr></thead>
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th><th class="num">Confirmed</th><th class="num">Effective</th><th class="num">Received</th><th class="num">Damaged</th><th class="num">Discrepancy</th><th>Status</th><th>Shortage reason</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>` : emptyState('No items yet — add one below or import a file.')}`;
     document.getElementById('main').appendChild(linesPanel);
     const soExportBtn = document.getElementById('soExportBtn');
@@ -1806,12 +1818,15 @@ async function renderPurchaseOrderDetail(){
     const header = orders.find(o => o.PONumber === poNumber);
     const myLines = lines.filter(l => l.PONumber === poNumber);
     const isCancelled = header && header.Status === 'Cancelled';
-    const rowsHtml = myLines.map((l,i) => `
+    const rowsHtml = myLines.map((l,i) => {
+      const confirmedVal = (l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined) ? l.ConfirmedQty : l.QtyOrdered;
+      return `
       <tr data-linenum="${l.LineNum}">
-        <td class="sku">${l.SKU}</td><td class="num">${fmt(l.QtyOrdered)}</td>
+        <td class="sku">${l.SKU}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td><td class="num">${fmt(l.QtyOrdered)}</td>
         <td class="num">${fmt(l.UnitCost)}</td><td class="num">${fmt(l.LineTotal)}</td>
-        <td class="num"><input type="number" class="confirmQtyInput" min="0" value="${l.ConfirmedQty!==''&&l.ConfirmedQty!==undefined?l.ConfirmedQty:l.QtyOrdered}" style="width:80px;text-align:right;" ${isCancelled?'disabled':''}></td>
-        <td class="num">${fmt(l.QtyReceived)}</td></tr>`).join('');
+        <td class="num"><input type="number" class="confirmQtyInput" min="0" value="${confirmedVal}" style="width:80px;text-align:right;" ${isCancelled?'disabled':''}></td>
+        <td class="num">${fmt(l.QtyReceived)}</td></tr>`;
+    }).join('');
 
     setPanel(`
       <div class="panel-head"><h3>Order summary</h3>
@@ -1836,7 +1851,7 @@ async function renderPurchaseOrderDetail(){
           ${myLines.length ? exportBtnHtml('poExportBtn','Export lines') : ''}
           ${myLines.length && !isCancelled ? `<button class="btn" id="saveConfirmedBtn">Save confirmed qty</button>` : ''}
         </div></div>
-      ${myLines.length ? `<table><thead><tr><th>SKU</th><th class="num">Qty ordered</th><th class="num">Unit cost</th><th class="num">Line total</th><th class="num">Confirmed qty</th><th class="num">Qty received</th></tr></thead>
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Qty ordered</th><th class="num">Unit cost</th><th class="num">Line total</th><th class="num">Confirmed qty</th><th class="num">Qty received</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
         <div class="empty" style="text-align:left;padding:10px 16px;">Confirmed qty defaults to Qty Ordered — edit once your supplier commits to a different amount, then Save. Qty Received is filled in from the Warehouse module's Receipt screen.</div>`
         : emptyState('No items yet — add one below or import a file.')}`;
