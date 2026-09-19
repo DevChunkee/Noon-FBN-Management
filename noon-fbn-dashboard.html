@@ -598,7 +598,8 @@ async function renderCatalog(){
       return '—';
     };
     const rows = state.catalog.map(c => `
-      <tr data-zsku="${c.zSKU}" class="clickable" title="Click to edit this item">
+      <tr data-zsku="${c.zSKU}" data-brand="${c.Brand||''}" data-supplier="${c.Supplier||''}" data-flag="${c.MarginFlag||''}" class="clickable" title="Click to edit this item">
+        <td><input type="checkbox" class="catalogRowCheck" onclick="event.stopPropagation()"></td>
         <td class="sku">${c.SKU}</td>
         <td>${c.ItemName}</td>
         <td>${c.Brand||''}</td>
@@ -614,23 +615,45 @@ async function renderCatalog(){
         </td>
         <td>${flagChip(c.MarginFlag)}</td>
       </tr>`).join('');
+    const distinct = (key) => Array.from(new Set(state.catalog.map(c => c[key]).filter(v => v))).sort();
+    const brands = distinct('Brand'), suppliers = distinct('Supplier');
+    const optHtml = (arr) => arr.map(v => `<option value="${v}">${v}</option>`).join('');
     setPanel(`
-      <div class="panel-head" style="flex-wrap:wrap;gap:10px;"><h3>${state.catalog.length} SKU${state.catalog.length===1?'':'s'}</h3>
+      <div class="panel-head" style="flex-wrap:wrap;gap:10px;"><h3 id="rowCountLabel">${state.catalog.length} SKU${state.catalog.length===1?'':'s'}</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button class="btn primary" id="catalogAddBtn">Add new SKU</button>
           <button class="btn" id="catalogBulkBtn">Bulk import</button>
           ${exportBtnHtml('catalogExportBtn')}
-          ${templateBtnHtml('catalogTemplateBtn')}
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div></div>
-      ${state.catalog.length ? `<table>
-        <thead><tr><th>SKU</th><th>Item</th><th>Brand</th><th>Supplier</th><th>Cost</th><th>Price</th><th>Margin</th><th>Status</th><th>Flag</th></tr></thead>
+      ${state.catalog.length ? `
+      <div class="panel-head" style="flex-wrap:wrap;gap:10px;">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <label style="font-size:12px;color:var(--text-dim);">Brand</label>
+          <select id="filterBrand"><option value="">All</option>${optHtml(brands)}</select>
+          <label style="font-size:12px;color:var(--text-dim);">Supplier</label>
+          <select id="filterSupplier"><option value="">All</option>${optHtml(suppliers)}</select>
+          <label style="font-size:12px;color:var(--text-dim);">Flag</label>
+          <select id="filterFlag"><option value="">All</option><option value="OK">OK</option><option value="Low Margin">Low Margin</option><option value="Discontinued">Discontinued</option></select>
+          <button class="btn" id="filterClearBtn">Clear filter</button>
+        </div>
+        <span class="msg" id="selCount" style="color:var(--text-dim);">0 selected</span>
+      </div>
+      <table>
+        <thead><tr><th><input type="checkbox" id="catalogSelectAll" title="Select all shown rows"></th><th>SKU</th><th>Item</th><th>Brand</th><th>Supplier</th><th>Cost</th><th>Price</th><th>Margin</th><th>Status</th><th>Flag</th></tr></thead>
         <tbody>${rows}</tbody></table>` : emptyState('No SKUs yet — click "Add new SKU" above.')}
     `);
-    document.getElementById('catalogExportBtn').onclick = () => exportRows(state.catalog, 'master-catalog.xlsx', 'Master Catalog');
-    document.getElementById('catalogTemplateBtn').onclick = () => downloadTemplate(
-      ['zSKU','Barcode','SKU','Item Name','MOQ','Cost','Price','Outbound Fee','Storage Cost','Brand','Supplier'],
-      'master-catalog-template.xlsx');
+    document.getElementById('catalogExportBtn').onclick = () => {
+      const checked = Array.from(document.querySelectorAll('.catalogRowCheck:checked')).map(cb => cb.closest('tr').dataset.zsku);
+      let toExport;
+      if(checked.length){
+        toExport = state.catalog.filter(c => checked.includes(c.zSKU));
+      }else{
+        const visible = Array.from(document.querySelectorAll('tr[data-zsku]')).filter(tr => tr.style.display !== 'none').map(tr => tr.dataset.zsku);
+        toExport = state.catalog.filter(c => visible.includes(c.zSKU));
+      }
+      exportRows(toExport, 'master-catalog.xlsx', 'Master Catalog');
+    };
     document.querySelectorAll('.statusSelect').forEach(sel => {
       sel.onchange = async () => {
         const zsku = sel.dataset.zsku;
@@ -647,6 +670,49 @@ async function renderCatalog(){
     });
     document.getElementById('catalogAddBtn').onclick = openCatalogAddModal;
     document.getElementById('catalogBulkBtn').onclick = openCatalogBulkModal;
+
+    function updateCatalogSelCount(){
+      const n = document.querySelectorAll('.catalogRowCheck:checked').length;
+      const el = document.getElementById('selCount');
+      if(el) el.textContent = `${n} selected`;
+    }
+    function applyCatalogFilter(){
+      const brand = document.getElementById('filterBrand').value;
+      const supplier = document.getElementById('filterSupplier').value;
+      const flag = document.getElementById('filterFlag').value;
+      let shown = 0;
+      document.querySelectorAll('tr[data-zsku]').forEach(tr => {
+        let show = true;
+        if(brand && tr.dataset.brand !== brand) show = false;
+        if(supplier && tr.dataset.supplier !== supplier) show = false;
+        if(flag && tr.dataset.flag !== flag) show = false;
+        tr.style.display = show ? '' : 'none';
+        if(show) shown++;
+      });
+      const label = document.getElementById('rowCountLabel');
+      const filtered = brand || supplier || flag;
+      if(label) label.textContent = filtered ? `${shown} of ${state.catalog.length} SKUs (filtered)` : `${state.catalog.length} SKU${state.catalog.length===1?'':'s'}`;
+      const selectAll = document.getElementById('catalogSelectAll');
+      if(selectAll) selectAll.checked = false;
+    }
+    const filterBrand = document.getElementById('filterBrand');
+    if(filterBrand){
+      filterBrand.onchange = applyCatalogFilter;
+      document.getElementById('filterSupplier').onchange = applyCatalogFilter;
+      document.getElementById('filterFlag').onchange = applyCatalogFilter;
+      document.getElementById('filterClearBtn').onclick = () => {
+        filterBrand.value = ''; document.getElementById('filterSupplier').value = ''; document.getElementById('filterFlag').value = '';
+        applyCatalogFilter();
+      };
+      document.querySelectorAll('.catalogRowCheck').forEach(cb => cb.onchange = updateCatalogSelCount);
+      const catalogSelectAll = document.getElementById('catalogSelectAll');
+      catalogSelectAll.onchange = () => {
+        document.querySelectorAll('tr[data-zsku]').forEach(tr => {
+          if(tr.style.display !== 'none') tr.querySelector('.catalogRowCheck').checked = catalogSelectAll.checked;
+        });
+        updateCatalogSelCount();
+      };
+    }
   }catch(e){ setPanel(errorState(e)); }
 }
 
@@ -705,7 +771,10 @@ function openCatalogBulkModal(){
   overlay.innerHTML = `
     <div class="modal">
       <div class="panel-head"><h3>Bulk import SKUs</h3>
-        <button class="btn" id="catalogBulkCloseBtn">Close</button></div>
+        <div style="display:flex;gap:8px;">
+          ${templateBtnHtml('catalogTemplateBtn')}
+          <button class="btn" id="catalogBulkCloseBtn">Close</button>
+        </div></div>
       <div class="importzone" id="catalogImportDrop">Click to choose a file — headers: zSKU, Barcode, SKU (any one required), Item Name, MOQ, Cost, Price, Outbound Fee, Storage Cost, Brand, Supplier
         <input type="file" id="catalogImportFile" accept=".xlsx,.xls,.csv">
       </div>
@@ -714,6 +783,9 @@ function openCatalogBulkModal(){
   document.body.appendChild(overlay);
   overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('catalogBulkOverlay'); };
   document.getElementById('catalogBulkCloseBtn').onclick = () => closeModalOverlay('catalogBulkOverlay');
+  document.getElementById('catalogTemplateBtn').onclick = () => downloadTemplate(
+    ['zSKU','Barcode','SKU','Item Name','MOQ','Cost','Price','Outbound Fee','Storage Cost','Brand','Supplier'],
+    'master-catalog-template.xlsx');
   document.getElementById('catalogImportDrop').onclick = () => document.getElementById('catalogImportFile').click();
   document.getElementById('catalogImportFile').onchange = async (ev) => {
     const file = ev.target.files[0];
