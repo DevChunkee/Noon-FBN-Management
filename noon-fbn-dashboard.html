@@ -615,15 +615,17 @@ async function renderCatalog(){
         <td>${flagChip(c.MarginFlag)}</td>
       </tr>`).join('');
     setPanel(`
-      <div class="panel-head"><h3>${state.catalog.length} SKU${state.catalog.length===1?'':'s'}</h3>
-        <div style="display:flex;gap:8px;">
+      <div class="panel-head" style="flex-wrap:wrap;gap:10px;"><h3>${state.catalog.length} SKU${state.catalog.length===1?'':'s'}</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn primary" id="catalogAddBtn">Add new SKU</button>
+          <button class="btn" id="catalogBulkBtn">Bulk import</button>
           ${exportBtnHtml('catalogExportBtn')}
           ${templateBtnHtml('catalogTemplateBtn')}
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div></div>
       ${state.catalog.length ? `<table>
         <thead><tr><th>SKU</th><th>Item</th><th>Brand</th><th>Supplier</th><th>Cost</th><th>Price</th><th>Margin</th><th>Status</th><th>Flag</th></tr></thead>
-        <tbody>${rows}</tbody></table>` : emptyState('No SKUs yet — add one below.')}
+        <tbody>${rows}</tbody></table>` : emptyState('No SKUs yet — click "Add new SKU" above.')}
     `);
     document.getElementById('catalogExportBtn').onclick = () => exportRows(state.catalog, 'master-catalog.xlsx', 'Master Catalog');
     document.getElementById('catalogTemplateBtn').onclick = () => downloadTemplate(
@@ -643,8 +645,22 @@ async function renderCatalog(){
     document.querySelectorAll('tr.clickable[data-zsku]').forEach(tr => {
       tr.onclick = () => openCatalogEditModal(tr.dataset.zsku);
     });
+    document.getElementById('catalogAddBtn').onclick = openCatalogAddModal;
+    document.getElementById('catalogBulkBtn').onclick = openCatalogBulkModal;
+  }catch(e){ setPanel(errorState(e)); }
+}
 
-    const addPanelHtml = `
+function closeModalOverlay(id){
+  const overlay = document.getElementById(id);
+  if(overlay) overlay.remove();
+}
+
+function openCatalogAddModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'catalogAddOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
       <div class="panel-head"><h3>Add a new SKU</h3></div>
       <form class="form" id="catalogForm">
         <div class="field"><label>zSKU</label><input type="text" name="zsku" placeholder="Z00003" required></div>
@@ -658,82 +674,92 @@ async function renderCatalog(){
         <div class="field"><label>Price</label><input type="number" name="price" step="0.01" min="0" required></div>
         <div class="field"><label>Outbound fee</label><input type="number" name="outboundFee" step="0.01" min="0"></div>
         <div class="field"><label>Storage cost (monthly)</label><input type="number" name="storageCost" step="0.01" min="0"></div>
-        <div class="form-foot"><button class="btn primary" type="submit">Add SKU</button><span class="msg" id="catalogMsg"></span></div>
-      </form>`;
-    const panelEl = document.createElement('div');
-    panelEl.className = 'panel';
-    panelEl.innerHTML = addPanelHtml;
-    document.getElementById('main').appendChild(panelEl);
-    document.getElementById('catalogForm').onsubmit = async (ev) => {
-      ev.preventDefault();
-      const f = new FormData(ev.target);
-      const msg = document.getElementById('catalogMsg');
-      msg.className='msg'; msg.textContent='Saving…';
-      try{
-        await apiPost('addCatalogItem', Object.fromEntries(f));
-        msg.className='msg ok'; msg.textContent='Added.';
-        state.catalog = [];
-        ev.target.reset();
-        setTimeout(() => render(), 600);
-      }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
-    };
+        <div class="form-foot">
+          <button class="btn primary" type="submit">Add SKU</button>
+          <button class="btn" type="button" id="catalogAddCancelBtn">Cancel</button>
+          <span class="msg" id="catalogMsg"></span>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('catalogAddOverlay'); };
+  document.getElementById('catalogAddCancelBtn').onclick = () => closeModalOverlay('catalogAddOverlay');
+  document.getElementById('catalogForm').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const msg = document.getElementById('catalogMsg');
+    msg.className='msg'; msg.textContent='Saving…';
+    try{
+      await apiPost('addCatalogItem', Object.fromEntries(f));
+      msg.className='msg ok'; msg.textContent='Added.';
+      state.catalog = [];
+      setTimeout(() => { closeModalOverlay('catalogAddOverlay'); render(); }, 500);
+    }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+  };
+}
 
-    const bulkPanel = document.createElement('div');
-    bulkPanel.className = 'panel';
-    bulkPanel.innerHTML = `
-      <div class="panel-head"><h3>Bulk import SKUs</h3></div>
+function openCatalogBulkModal(){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'catalogBulkOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="panel-head"><h3>Bulk import SKUs</h3>
+        <button class="btn" id="catalogBulkCloseBtn">Close</button></div>
       <div class="importzone" id="catalogImportDrop">Click to choose a file — headers: zSKU, Barcode, SKU (any one required), Item Name, MOQ, Cost, Price, Outbound Fee, Storage Cost, Brand, Supplier
         <input type="file" id="catalogImportFile" accept=".xlsx,.xls,.csv">
       </div>
-      <div id="catalogImportBody"></div>`;
-    document.getElementById('main').appendChild(bulkPanel);
-    document.getElementById('catalogImportDrop').onclick = () => document.getElementById('catalogImportFile').click();
-    document.getElementById('catalogImportFile').onchange = async (ev) => {
-      const file = ev.target.files[0];
-      if(!file) return;
-      const body = document.getElementById('catalogImportBody');
-      body.innerHTML = '<div class="loading">parsing…</div>';
-      try{
-        const wb = await readFileAsWorkbook(file);
-        const parsed = sheetRows(wb);
-        if(!parsed.length) throw new Error('No rows found.');
-        const headers = Object.keys(parsed[0]);
-        const norm = (h) => h.toLowerCase().replace(/[^a-z]/g,'');
-        const findExact = (name) => headers.find(h => norm(h) === name);
-        const findContains = (needles) => headers.find(h => needles.some(n => norm(h).includes(n)));
-        const cols = {
-          zsku: findExact('zsku') || findContains(['zsku']),
-          barcode: findExact('barcode') || findContains(['barcode']),
-          sku: findExact('sku') || headers.find(h => norm(h).includes('sku') && norm(h) !== 'zsku' && !norm(h).includes('zsku')),
-          itemName: findExact('itemname') || findExact('name') || findContains(['itemname','productname']),
-          moq: findExact('moq'), cost: findExact('cost'), price: findExact('price'),
-          outboundFee: findContains(['outboundfee','outbound']), storageCost: findContains(['storagecost','storage']),
-          brand: findExact('brand'), supplier: findExact('supplier')
-        };
-        const items = parsed.map(r => ({
-          zsku: cols.zsku ? r[cols.zsku] : '', barcode: cols.barcode ? r[cols.barcode] : '',
-          sku: cols.sku ? r[cols.sku] : '', itemName: cols.itemName ? r[cols.itemName] : '',
-          moq: cols.moq ? r[cols.moq] : 0, cost: cols.cost ? r[cols.cost] : 0, price: cols.price ? r[cols.price] : 0,
-          outboundFee: cols.outboundFee ? r[cols.outboundFee] : 0, storageCost: cols.storageCost ? r[cols.storageCost] : 0,
-          brand: cols.brand ? r[cols.brand] : '', supplier: cols.supplier ? r[cols.supplier] : ''
-        }));
-        body.innerHTML = `<div class="batch-bar">
-          <span class="msg">${items.length} row(s) parsed.</span>
-          <button class="btn primary" id="catalogImportBtn">Import</button>
-          <span class="msg" id="catalogImportMsg"></span></div>`;
-        document.getElementById('catalogImportBtn').onclick = async () => {
-          const msg = document.getElementById('catalogImportMsg');
-          msg.className='msg'; msg.textContent='Saving…';
-          try{
-            const r = await apiPost('addCatalogItemsBatch', { items });
-            msg.className='msg ok';
-            msg.textContent = `Added ${r.added}, skipped ${r.skippedCount} (already existed or missing an identifier).`;
-            state.catalog = [];
-          }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
-        };
-      }catch(e){ body.innerHTML = `<div class="empty" style="color:var(--red)">${e.message}</div>`; }
-    };
-  }catch(e){ setPanel(errorState(e)); }
+      <div id="catalogImportBody"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('catalogBulkOverlay'); };
+  document.getElementById('catalogBulkCloseBtn').onclick = () => closeModalOverlay('catalogBulkOverlay');
+  document.getElementById('catalogImportDrop').onclick = () => document.getElementById('catalogImportFile').click();
+  document.getElementById('catalogImportFile').onchange = async (ev) => {
+    const file = ev.target.files[0];
+    if(!file) return;
+    const body = document.getElementById('catalogImportBody');
+    body.innerHTML = '<div class="loading">parsing…</div>';
+    try{
+      const wb = await readFileAsWorkbook(file);
+      const parsed = sheetRows(wb);
+      if(!parsed.length) throw new Error('No rows found.');
+      const headers = Object.keys(parsed[0]);
+      const norm = (h) => h.toLowerCase().replace(/[^a-z]/g,'');
+      const findExact = (name) => headers.find(h => norm(h) === name);
+      const findContains = (needles) => headers.find(h => needles.some(n => norm(h).includes(n)));
+      const cols = {
+        zsku: findExact('zsku') || findContains(['zsku']),
+        barcode: findExact('barcode') || findContains(['barcode']),
+        sku: findExact('sku') || headers.find(h => norm(h).includes('sku') && norm(h) !== 'zsku' && !norm(h).includes('zsku')),
+        itemName: findExact('itemname') || findExact('name') || findContains(['itemname','productname']),
+        moq: findExact('moq'), cost: findExact('cost'), price: findExact('price'),
+        outboundFee: findContains(['outboundfee','outbound']), storageCost: findContains(['storagecost','storage']),
+        brand: findExact('brand'), supplier: findExact('supplier')
+      };
+      const items = parsed.map(r => ({
+        zsku: cols.zsku ? r[cols.zsku] : '', barcode: cols.barcode ? r[cols.barcode] : '',
+        sku: cols.sku ? r[cols.sku] : '', itemName: cols.itemName ? r[cols.itemName] : '',
+        moq: cols.moq ? r[cols.moq] : 0, cost: cols.cost ? r[cols.cost] : 0, price: cols.price ? r[cols.price] : 0,
+        outboundFee: cols.outboundFee ? r[cols.outboundFee] : 0, storageCost: cols.storageCost ? r[cols.storageCost] : 0,
+        brand: cols.brand ? r[cols.brand] : '', supplier: cols.supplier ? r[cols.supplier] : ''
+      }));
+      body.innerHTML = `<div class="batch-bar">
+        <span class="msg">${items.length} row(s) parsed.</span>
+        <button class="btn primary" id="catalogImportBtn">Import</button>
+        <span class="msg" id="catalogImportMsg"></span></div>`;
+      document.getElementById('catalogImportBtn').onclick = async () => {
+        const msg = document.getElementById('catalogImportMsg');
+        msg.className='msg'; msg.textContent='Saving…';
+        try{
+          const r = await apiPost('addCatalogItemsBatch', { items });
+          msg.className='msg ok';
+          msg.textContent = `Added ${r.added}, skipped ${r.skippedCount} (already existed or missing an identifier).`;
+          state.catalog = [];
+        }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+      };
+    }catch(e){ body.innerHTML = `<div class="empty" style="color:var(--red)">${e.message}</div>`; }
+  };
 }
 
 function closeCatalogEditModal(){
@@ -830,9 +856,7 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
           <input type="number" id="filterMin" placeholder="min" style="width:70px;">
           <input type="number" id="filterMax" placeholder="max" style="width:70px;">
           <button class="btn" id="filterClearBtn">Clear filter</button>
-          ${rows.length ? `<button class="btn" id="selectAllBtn">Select all</button>
-          <button class="btn" id="unselectAllBtn">Unselect all</button>
-          <span class="msg" id="selCount" style="color:var(--text-dim);">0 selected</span>` : ''}
+          ${rows.length ? `<span class="msg" id="selCount" style="color:var(--text-dim);">0 selected</span>` : ''}
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div>
       </div>
@@ -880,10 +904,6 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
     updateSelCount();
     const selectAllCheck = document.getElementById('selectAllCheck');
     if(selectAllCheck) selectAllCheck.onchange = () => setAllChecks(selectAllCheck.checked);
-    const selectAllBtn = document.getElementById('selectAllBtn');
-    if(selectAllBtn) selectAllBtn.onclick = () => setAllChecks(true);
-    const unselectAllBtn = document.getElementById('unselectAllBtn');
-    if(unselectAllBtn) unselectAllBtn.onclick = () => setAllChecks(false);
     const btn = document.getElementById('batchAddBtn');
     if(btn) btn.onclick = async () => {
       const items = [];
