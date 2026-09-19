@@ -160,7 +160,7 @@
 
 <script>
 const state = { config: null, catalog: [], view: 'catalog', selectedSO: null, selectedPO: null, session: null,
-  catalogFilters: { brands: [], suppliers: [], flags: [] }, catalogSelected: new Set() };
+  catalogFilters: { brands: [], suppliers: [], flags: [], internalStock: [], noonStock: [] }, catalogSelected: new Set() };
 const $main = document.getElementById('main');
 
 function fmt(n){ if(n===null||n===undefined||n==='') return '—'; if(typeof n!=='number') return n;
@@ -529,7 +529,7 @@ function switchView(v){
   if(v !== state.view && state.view === 'catalog'){
     // Filters/selection are scoped to staying on this module — leaving it
     // (even to come back later) starts clean, same as a fresh page load.
-    state.catalogFilters = { brands: [], suppliers: [], flags: [] };
+    state.catalogFilters = { brands: [], suppliers: [], flags: [], internalStock: [], noonStock: [] };
     state.catalogSelected = new Set();
   }
   state.view = v;
@@ -614,15 +614,35 @@ function renderLogin(){
 async function renderCatalog(){
   $main.innerHTML = viewHead('Master Catalog', 'Every SKU, its pricing, and status. Change Status inline; Margin Flag is automatic.') + panelShell('loading');
   try{
-    state.catalog = await apiGet('masterCatalog');
+    const [catalog, internalRows, noonRows] = await Promise.all([
+      apiGet('masterCatalog'),
+      apiGet('internalReplenishment').catch(() => []),
+      apiGet('replenishmentPlanner').catch(() => [])
+    ]);
+    state.catalog = catalog;
+    const internalMap = new Map(internalRows.map(r => [r.zSKU, Number(r.InternalOnHand)||0]));
+    const noonMap = new Map(noonRows.map(r => [r.zSKU, Number(r.NoonSaleableQty)||0]));
+    state.catalog.forEach(c => {
+      const iq = internalMap.has(c.zSKU) ? internalMap.get(c.zSKU) : null;
+      const nq = noonMap.has(c.zSKU) ? noonMap.get(c.zSKU) : null;
+      c._internalQty = iq;
+      c._noonQty = nq;
+      c._internalStock = iq === null ? '' : (iq > 0 ? 'In stock' : 'Out of stock');
+      c._noonStock = nq === null ? '' : (nq > 0 ? 'In stock' : 'Out of stock');
+    });
     const flagChip = (flag) => {
       if(flag === 'Low Margin') return `<span class="chip amber">Low Margin</span>`;
       if(flag === 'Discontinued') return `<span class="chip red">Discontinued</span>`;
       if(flag === 'OK') return `<span class="chip green">OK</span>`;
       return '—';
     };
+    const stockChip = (qty) => {
+      if(qty === null) return '<span style="color:var(--text-faint);">—</span>';
+      if(qty === 0) return `<span class="chip red">${fmt(qty)}</span>`;
+      return `<span class="chip green">${fmt(qty)}</span>`;
+    };
     const rows = state.catalog.map(c => `
-      <tr data-zsku="${c.zSKU}" data-brand="${c.Brand||''}" data-supplier="${c.Supplier||''}" data-flag="${c.MarginFlag||''}" class="clickable" title="Click to edit this item">
+      <tr data-zsku="${c.zSKU}" data-brand="${c.Brand||''}" data-supplier="${c.Supplier||''}" data-flag="${c.MarginFlag||''}" data-internalstock="${c._internalStock}" data-noonstock="${c._noonStock}" class="clickable" title="Click to edit this item">
         <td><input type="checkbox" class="catalogRowCheck" ${state.catalogSelected.has(c.zSKU)?'checked':''} onclick="event.stopPropagation()"></td>
         <td class="sku">${c.SKU}</td>
         <td>${c.ItemName}</td>
@@ -631,6 +651,8 @@ async function renderCatalog(){
         <td class="num">${fmt(c.Cost)}</td>
         <td class="num">${fmt(c.Price)}</td>
         <td class="num">${fmt((c.MarginPct||0)*100)}%</td>
+        <td class="num">${stockChip(c._internalQty)}</td>
+        <td class="num">${stockChip(c._noonQty)}</td>
         <td>
           <select class="statusSelect" data-zsku="${c.zSKU}" onclick="event.stopPropagation()">
             <option ${c.Status==='Active'?'selected':''}>Active</option>
@@ -643,7 +665,8 @@ async function renderCatalog(){
     // from the OTHER active filters, so e.g. picking Brand=Beso narrows the
     // Supplier and Flag lists down to only values that actually co-occur
     // with a Beso item — not every supplier/flag in the whole catalog.
-    const DIMS = { brand: { field: 'Brand', key: 'brands' }, supplier: { field: 'Supplier', key: 'suppliers' }, flag: { field: 'MarginFlag', key: 'flags' } };
+    const DIMS = { brand: { field: 'Brand', key: 'brands' }, supplier: { field: 'Supplier', key: 'suppliers' }, flag: { field: 'MarginFlag', key: 'flags' },
+      internalstock: { field: '_internalStock', key: 'internalStock' }, noonstock: { field: '_noonStock', key: 'noonStock' } };
     function optionsFor(dim){
       const subset = state.catalog.filter(c => {
         for(const d in DIMS){
@@ -678,12 +701,14 @@ async function renderCatalog(){
           ${msFilterHtml('brand', 'Brand', optionsFor('brand'), state.catalogFilters.brands)}
           ${msFilterHtml('supplier', 'Supplier', optionsFor('supplier'), state.catalogFilters.suppliers)}
           ${msFilterHtml('flag', 'Flag', optionsFor('flag'), state.catalogFilters.flags)}
+          ${msFilterHtml('internalstock', 'Internal WH stock', optionsFor('internalstock'), state.catalogFilters.internalStock)}
+          ${msFilterHtml('noonstock', 'Noon FBN saleable', optionsFor('noonstock'), state.catalogFilters.noonStock)}
           <button class="btn" id="filterClearBtn">Clear filter</button>
         </div>
         <span class="msg" id="selCount" style="color:var(--text-dim);">0 selected</span>
       </div>
       <table>
-        <thead><tr><th><input type="checkbox" id="catalogSelectAll" title="Select all shown rows"></th><th>SKU</th><th>Item</th><th>Brand</th><th>Supplier</th><th>Cost</th><th>Price</th><th>Margin</th><th>Status</th><th>Flag</th></tr></thead>
+        <thead><tr><th><input type="checkbox" id="catalogSelectAll" title="Select all shown rows"></th><th>SKU</th><th>Item</th><th>Brand</th><th>Supplier</th><th>Cost</th><th>Price</th><th>Margin</th><th>Internal WH</th><th>Noon FBN</th><th>Status</th><th>Flag</th></tr></thead>
         <tbody>${rows}</tbody></table>` : emptyState('No SKUs yet — click "Add new SKU" above.')}
     `);
     document.getElementById('catalogExportBtn').onclick = () => {
@@ -720,24 +745,26 @@ async function renderCatalog(){
       if(el) el.textContent = `${n} selected`;
     }
     function applyCatalogFilter(){
-      const { brands: fb, suppliers: fs, flags: ff } = state.catalogFilters;
+      const { brands: fb, suppliers: fs, flags: ff, internalStock: fi, noonStock: fn } = state.catalogFilters;
       let shown = 0;
       document.querySelectorAll('tr[data-zsku]').forEach(tr => {
         let show = true;
         if(fb.length && !fb.includes(tr.dataset.brand)) show = false;
         if(fs.length && !fs.includes(tr.dataset.supplier)) show = false;
         if(ff.length && !ff.includes(tr.dataset.flag)) show = false;
+        if(fi.length && !fi.includes(tr.dataset.internalstock)) show = false;
+        if(fn.length && !fn.includes(tr.dataset.noonstock)) show = false;
         tr.style.display = show ? '' : 'none';
         if(show) shown++;
       });
       const label = document.getElementById('rowCountLabel');
-      const filtered = fb.length || fs.length || ff.length;
+      const filtered = fb.length || fs.length || ff.length || fi.length || fn.length;
       if(label) label.textContent = filtered ? `${shown} of ${state.catalog.length} SKUs (filtered)` : `${state.catalog.length} SKU${state.catalog.length===1?'':'s'}`;
       const selectAll = document.getElementById('catalogSelectAll');
       if(selectAll) selectAll.checked = false;
     }
     if(state.catalog.length){
-      const dimLabels = { brand: 'Brand', supplier: 'Supplier', flag: 'Flag' };
+      const dimLabels = { brand: 'Brand', supplier: 'Supplier', flag: 'Flag', internalstock: 'Internal WH stock', noonstock: 'Noon FBN saleable' };
       function setBtnLabel(dim){
         const btn = document.getElementById(`ms_${dim}_btn`);
         const n = state.catalogFilters[DIMS[dim].key].length;
@@ -788,7 +815,7 @@ async function renderCatalog(){
         if(!e.target.closest('.msfilter')) document.querySelectorAll('.msfilter-panel').forEach(p => p.style.display = 'none');
       });
       document.getElementById('filterClearBtn').onclick = () => {
-        state.catalogFilters = { brands: [], suppliers: [], flags: [] };
+        state.catalogFilters = { brands: [], suppliers: [], flags: [], internalStock: [], noonStock: [] };
         renderCatalog();
       };
       applyCatalogFilter();
