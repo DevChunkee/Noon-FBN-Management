@@ -1710,7 +1710,6 @@ async function renderPurchaseOrderDetail(){
         <td class="num">${fmt(l.UnitCost)}</td><td class="num">${fmt(l.LineTotal)}</td>
         <td class="num"><input type="number" class="confirmQtyInput" min="0" value="${l.ConfirmedQty!==''&&l.ConfirmedQty!==undefined?l.ConfirmedQty:l.QtyOrdered}" style="width:80px;text-align:right;" ${isCancelled?'disabled':''}></td>
         <td class="num">${fmt(l.QtyReceived)}</td></tr>`).join('');
-    const options = catalog.map(c => `<option value="${c.zSKU}">${c.SKU} — ${c.ItemName}</option>`).join('');
 
     setPanel(`
       <div class="panel-head"><h3>Order summary</h3>
@@ -1758,74 +1757,162 @@ async function renderPurchaseOrderDetail(){
 
     if(isCancelled){ return; }
 
+    // Item pool for the dropdown: prefer items already tagged with this PO's
+    // supplier, so the suggestions are actually relevant; fall back to the
+    // whole catalog if that supplier has no tagged items (or the PO has no
+    // supplier set) so the field is never empty/useless.
+    const supplierName = header ? header.Supplier : '';
+    let itemPool = supplierName ? catalog.filter(c => c.Supplier === supplierName) : catalog;
+    if(!itemPool.length) itemPool = catalog;
+    const itemOptionsHtml = itemPool.map(c => `<option value="${c.SKU}" label="${(c.ItemName||'').replace(/"/g,'&quot;')}">`).join('');
+
     const addPanel = document.createElement('div');
     addPanel.className = 'panel';
     addPanel.innerHTML = `
-      <div class="panel-head"><h3>Add an item manually</h3></div>
-      <form class="form" id="poLineForm">
-        <div class="field span2"><label>SKU</label><select name="zsku" required>${options}</select></div>
-        <div class="field"><label>Qty ordered</label><input type="number" name="qtyOrdered" min="1" required></div>
-        <div class="form-foot"><button class="btn primary" type="submit">Add item</button><span class="msg" id="poLineMsg"></span></div>
-      </form>
-      <div class="panel-head"><h3>Or import items</h3>${templateBtnHtml('poTemplateBtn')}</div>
-      <div class="importzone" id="poImportDrop">Click to choose a file — columns ZSKU, QTY
-        <input type="file" id="poImportFile" accept=".xlsx,.xls,.csv">
-      </div>
-      <div id="poImportBody"></div>`;
+      <div class="panel-head"><h3>Add items</h3>
+        <button class="btn" id="poShowImportBtn">Import items</button></div>
+      <table id="poAddItemsTable">
+        <thead><tr><th>Item (zSKU, SKU or barcode)</th><th>Qty ordered</th><th></th></tr></thead>
+        <tbody id="poAddItemsBody">
+          <tr class="poAddRow">
+            <td><input type="text" class="poItemInput" list="poItemOptions" placeholder="Type or pick an item" autocomplete="off" style="width:100%;">
+              <span class="msg err poRowErr" style="display:none;">Item not found</span></td>
+            <td class="num"><input type="number" class="poQtyInput" min="1" style="width:90px;text-align:right;"></td>
+            <td><button type="button" class="btn poRemoveRowBtn" style="display:none;" title="Remove row">✕</button></td>
+          </tr>
+        </tbody>
+      </table>
+      <datalist id="poItemOptions">${itemOptionsHtml}</datalist>
+      <div class="form-foot" style="padding:12px 16px;">
+        <button class="btn primary" id="poAddItemsBtn">Add items</button>
+        <span class="msg" id="poLineMsg"></span>
+      </div>`;
     document.getElementById('main').appendChild(addPanel);
-    document.getElementById('poTemplateBtn').onclick = () => downloadTemplate(['zSKU','SKU','Barcode','QTY'], `${poNumber}-import-template.xlsx`);
 
-    document.getElementById('poLineForm').onsubmit = async (ev) => {
-      ev.preventDefault();
-      const f = new FormData(ev.target);
+    const addBody = document.getElementById('poAddItemsBody');
+    function newRow(){
+      const tr = document.createElement('tr');
+      tr.className = 'poAddRow';
+      tr.innerHTML = `
+        <td><input type="text" class="poItemInput" list="poItemOptions" placeholder="Type or pick an item" autocomplete="off" style="width:100%;">
+          <span class="msg err poRowErr" style="display:none;">Item not found</span></td>
+        <td class="num"><input type="number" class="poQtyInput" min="1" style="width:90px;text-align:right;"></td>
+        <td><button type="button" class="btn poRemoveRowBtn" title="Remove row">✕</button></td>`;
+      wireRow(tr);
+      return tr;
+    }
+    function wireRow(tr){
+      const itemInput = tr.querySelector('.poItemInput');
+      const qtyInput = tr.querySelector('.poQtyInput');
+      const removeBtn = tr.querySelector('.poRemoveRowBtn');
+      const maybeGrow = () => {
+        const isLast = tr === addBody.lastElementChild;
+        if(isLast && itemInput.value.trim() && qtyInput.value){
+          addBody.appendChild(newRow());
+        }
+      };
+      itemInput.addEventListener('input', maybeGrow);
+      qtyInput.addEventListener('input', maybeGrow);
+      removeBtn.onclick = () => { if(addBody.children.length > 1) tr.remove(); };
+    }
+    wireRow(addBody.querySelector('.poAddRow'));
+
+    document.getElementById('poAddItemsBtn').onclick = async () => {
       const msg = document.getElementById('poLineMsg');
+      document.querySelectorAll('.poRowErr').forEach(e => e.style.display = 'none');
+      document.querySelectorAll('.poItemInput').forEach(i => i.style.borderColor = '');
+      const items = [];
+      let hadError = false;
+      addBody.querySelectorAll('.poAddRow').forEach(tr => {
+        const itemInput = tr.querySelector('.poItemInput');
+        const qtyInput = tr.querySelector('.poQtyInput');
+        const raw = itemInput.value.trim();
+        if(!raw && !qtyInput.value) return; // blank trailing row — ignore
+        const zsku = resolveZsku(raw, catalog);
+        if(!zsku){
+          hadError = true;
+          itemInput.style.borderColor = 'var(--red)';
+          tr.querySelector('.poRowErr').style.display = '';
+          return;
+        }
+        const qty = Number(qtyInput.value || 0);
+        if(!raw || qty <= 0) return;
+        items.push({ zsku, qtyOrdered: qty });
+      });
+      if(hadError){ msg.className = 'msg err'; msg.textContent = 'Fix the highlighted item(s) — not found in the catalog.'; return; }
+      if(!items.length){ msg.className = 'msg err'; msg.textContent = 'Enter at least one item with a qty.'; return; }
       msg.className='msg'; msg.textContent='Saving…';
       try{
         await apiPost('addPurchaseOrderBatch', {
           poNumber, poDate: header?header.PODate:today(), supplier: header?header.Supplier:'',
-          items: [{ zsku: f.get('zsku'), qtyOrdered: f.get('qtyOrdered') }]
+          items
         });
         renderPurchaseOrderDetail();
       }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
     };
-    document.getElementById('poImportDrop').onclick = () => document.getElementById('poImportFile').click();
-    document.getElementById('poImportFile').onchange = async (ev) => {
-      const file = ev.target.files[0];
-      if(!file) return;
-      const body = document.getElementById('poImportBody');
-      body.innerHTML = '<div class="loading">parsing…</div>';
-      try{
-        const wb = await readFileAsWorkbook(file);
-        const parsed = sheetRows(wb);
-        if(!parsed.length) throw new Error('No rows found.');
-        const headers = Object.keys(parsed[0]);
-        const findExact = (name) => headers.find(h => h.toLowerCase().trim() === name);
-        const zskuCol = findExact('zsku') || headers.find(h => h.toLowerCase().includes('sku'));
-        const qtyCol = findExact('qty') || headers.find(h => h.toLowerCase().includes('qty'));
-        const items = [];
-        let unmatched = 0;
-        parsed.forEach(r => {
-          const z = resolveZsku(r[zskuCol], catalog);
-          if(!z){ unmatched++; return; }
-          items.push({ zsku: z, qtyOrdered: Number(r[qtyCol]||0) });
-        });
-        body.innerHTML = `<div class="batch-bar">
-          <span class="msg">${items.length} row(s) recognized${unmatched?`, ${unmatched} unmatched`:''}.</span>
-          <button class="btn primary" id="poImportBtn">Import</button>
-          <span class="msg" id="poImportMsg"></span></div>`;
-        document.getElementById('poImportBtn').onclick = async () => {
-          const msg = document.getElementById('poImportMsg');
-          msg.className='msg'; msg.textContent='Saving…';
-          try{
-            const r = await apiPostBatched('addPurchaseOrderBatch', items,
-              { poNumber, poDate: header?header.PODate:today(), supplier: header?header.Supplier:'' }, 'linesAdded',
-              (done,of) => { if(of>1){ msg.textContent = `Saving batch ${done}/${of}…`; } });
-            renderPurchaseOrderDetail();
-          }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
-        };
-      }catch(e){ body.innerHTML = `<div class="empty" style="color:var(--red)">${e.message}</div>`; }
-    };
+
+    document.getElementById('poShowImportBtn').onclick = () => openPOImportModal(poNumber, header, catalog);
   }catch(e){ setPanel(errorState(e)); }
+}
+
+function openPOImportModal(poNumber, header, catalog){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'poImportOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="panel-head"><h3>Import items</h3>
+        <div style="display:flex;gap:8px;">
+          ${templateBtnHtml('poTemplateBtn')}
+          <button class="btn" id="poImportCloseBtn">Close</button>
+        </div></div>
+      <div class="importzone" id="poImportDrop">Click to choose a file — columns ZSKU, QTY
+        <input type="file" id="poImportFile" accept=".xlsx,.xls,.csv">
+      </div>
+      <div id="poImportBody"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('poImportOverlay'); };
+  document.getElementById('poImportCloseBtn').onclick = () => closeModalOverlay('poImportOverlay');
+  document.getElementById('poTemplateBtn').onclick = () => downloadTemplate(['zSKU','SKU','Barcode','QTY'], `${poNumber}-import-template.xlsx`);
+  document.getElementById('poImportDrop').onclick = () => document.getElementById('poImportFile').click();
+  document.getElementById('poImportFile').onchange = async (ev) => {
+    const file = ev.target.files[0];
+    if(!file) return;
+    const body = document.getElementById('poImportBody');
+    body.innerHTML = '<div class="loading">parsing…</div>';
+    try{
+      const wb = await readFileAsWorkbook(file);
+      const parsed = sheetRows(wb);
+      if(!parsed.length) throw new Error('No rows found.');
+      const headers = Object.keys(parsed[0]);
+      const findExact = (name) => headers.find(h => h.toLowerCase().trim() === name);
+      const zskuCol = findExact('zsku') || headers.find(h => h.toLowerCase().includes('sku'));
+      const qtyCol = findExact('qty') || headers.find(h => h.toLowerCase().includes('qty'));
+      const items = [];
+      let unmatched = 0;
+      parsed.forEach(r => {
+        const z = resolveZsku(r[zskuCol], catalog);
+        if(!z){ unmatched++; return; }
+        items.push({ zsku: z, qtyOrdered: Number(r[qtyCol]||0) });
+      });
+      body.innerHTML = `<div class="batch-bar">
+        <span class="msg">${items.length} row(s) recognized${unmatched?`, ${unmatched} unmatched`:''}.</span>
+        <button class="btn primary" id="poImportBtn">Import</button>
+        <span class="msg" id="poImportMsg"></span></div>`;
+      document.getElementById('poImportBtn').onclick = async () => {
+        const msg = document.getElementById('poImportMsg');
+        msg.className='msg'; msg.textContent='Saving…';
+        try{
+          const r = await apiPostBatched('addPurchaseOrderBatch', items,
+            { poNumber, poDate: header?header.PODate:today(), supplier: header?header.Supplier:'' }, 'linesAdded',
+            (done,of) => { if(of>1){ msg.textContent = `Saving batch ${done}/${of}…`; } });
+          closeModalOverlay('poImportOverlay');
+          renderPurchaseOrderDetail();
+        }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+      };
+    }catch(e){ body.innerHTML = `<div class="empty" style="color:var(--red)">${e.message}</div>`; }
+  };
 }
 
 async function renderGRN(){
