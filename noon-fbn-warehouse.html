@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Noon FBN Warehouse</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root{
+    --bg:#0F1115; --panel:#171A21; --panel-alt:#1D2129; --border:#272C36;
+    --text:#E6E8EC; --text-dim:#8A93A3; --text-faint:#5A6270;
+    --amber:#E8A33D; --green:#4FB286; --blue:#5B8DEF; --red:#D9736E;
+    --mono: 'IBM Plex Mono', ui-monospace, monospace;
+    --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;}
+  .app{display:flex;flex-direction:column;min-height:100vh;}
+
+  .topbar{background:var(--panel);border-bottom:1px solid var(--border);padding:14px 18px;
+    display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:10;}
+  .brand{font-weight:700;font-size:16px;}
+  .brand-sub{color:var(--text-faint);font-size:11px;font-family:var(--mono);margin-top:2px;}
+  .conn{display:flex;align-items:center;gap:6px;font-size:11px;font-family:var(--mono);color:var(--text-faint);}
+  .conn-dot{width:7px;height:7px;border-radius:50%;background:var(--text-faint);}
+  .conn.ok .conn-dot{background:var(--green);}
+  .conn.err .conn-dot{background:var(--red);}
+
+  .tabs{display:flex;background:var(--panel);border-bottom:1px solid var(--border);overflow-x:auto;}
+  .tab{flex:1;text-align:center;padding:14px 8px;font-size:14px;font-weight:500;color:var(--text-dim);
+    cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;min-width:90px;}
+  .tab.active{color:var(--text);border-bottom-color:var(--blue);}
+
+  .main{flex:1;padding:18px;max-width:900px;margin:0 auto;width:100%;}
+  .view-title{font-size:19px;font-weight:700;margin:0 0 4px;}
+  .view-sub{color:var(--text-dim);font-size:13px;margin:0 0 16px;line-height:1.5;}
+
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:16px;}
+  .panel-head{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;}
+  .panel-head h3{margin:0;font-size:13px;font-weight:600;}
+
+  .btn{background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:6px;
+    padding:11px 16px;font-size:14px;font-family:var(--sans);cursor:pointer;font-weight:500;min-height:44px;}
+  .btn:hover{border-color:var(--text-faint);}
+  .btn.primary{background:var(--blue);border-color:var(--blue);color:#0B0F16;}
+  .btn.primary:hover{filter:brightness(1.08);}
+  .btn.full{width:100%;}
+  .btn:disabled{opacity:.4;}
+
+  .order-card{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;
+    align-items:center;cursor:pointer;}
+  .order-card:last-child{border-bottom:none;}
+  .order-card:hover{background:var(--panel-alt);}
+  .order-card .id{font-family:var(--mono);font-weight:600;font-size:14px;}
+  .order-card .meta{font-size:12px;color:var(--text-dim);margin-top:3px;}
+  .chip{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-family:var(--mono);font-weight:500;}
+  .chip.amber{background:rgba(232,163,61,.15);color:var(--amber);}
+  .chip.green{background:rgba(79,178,134,.15);color:var(--green);}
+  .chip.red{background:rgba(217,115,110,.15);color:var(--red);}
+
+  .line-row{padding:14px 16px;border-bottom:1px solid var(--border);}
+  .line-row:last-child{border-bottom:none;}
+  .line-row.highlight{background:rgba(91,141,239,.12);}
+  .line-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;}
+  .line-sku{font-family:var(--mono);font-weight:600;font-size:14px;}
+  .line-name{font-size:12.5px;color:var(--text-dim);margin-top:2px;}
+  .line-planned{font-family:var(--mono);color:var(--text-dim);font-size:13px;}
+  .line-fields{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+  input, select{background:var(--bg);border:1px solid var(--border);color:var(--text);
+    border-radius:6px;padding:10px 12px;font-size:15px;font-family:var(--sans);min-height:44px;}
+  input:focus, select:focus{outline:none;border-color:var(--blue);}
+  input[type=number]{width:100px;}
+  .shortage-select{flex:1;min-width:180px;}
+
+  .scan-bar{display:flex;gap:8px;padding:14px 16px;background:var(--panel-alt);border-bottom:1px solid var(--border);}
+  .scan-bar input{flex:1;font-family:var(--mono);}
+
+  .empty{padding:36px 20px;text-align:center;color:var(--text-dim);font-size:13.5px;}
+  .loading{padding:36px 20px;text-align:center;color:var(--text-faint);font-size:13px;font-family:var(--mono);}
+  .msg{font-size:13px;font-family:var(--mono);padding:0 16px;}
+  .msg.ok{color:var(--green);}
+  .msg.err{color:var(--red);}
+  .form{padding:16px;display:flex;flex-direction:column;gap:12px;}
+  label{font-size:12px;color:var(--text-dim);display:block;margin-bottom:5px;}
+  .field{display:flex;flex-direction:column;gap:5px;}
+  .form-foot{display:flex;gap:10px;align-items:center;padding-top:4px;flex-wrap:wrap;}
+  .setup-note{background:var(--panel-alt);border:1px solid var(--border);border-radius:6px;padding:16px 18px;
+    font-size:12.5px;color:var(--text-dim);line-height:1.7;margin-bottom:18px;}
+  .setup-note b{color:var(--text);}
+  .setup-note ol{margin:8px 0 0;padding-left:20px;}
+
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:100;
+    display:flex;align-items:center;justify-content:center;padding:16px;}
+  .modal{background:var(--panel);border-radius:10px;padding:18px;max-width:420px;width:100%;}
+  .modal h3{margin:0 0 12px;font-size:15px;}
+  #qr-reader{border-radius:8px;overflow:hidden;}
+  .modal-close{width:100%;margin-top:12px;}
+
+  a.back{color:var(--blue);font-size:13px;text-decoration:none;display:inline-block;margin-bottom:10px;}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div>
+      <div class="brand">Noon FBN Warehouse</div>
+      <div class="brand-sub">delivery · picking · receipt</div>
+    </div>
+    <div class="conn" id="connStatus"><span class="conn-dot"></span><span id="connLabel">not connected</span></div>
+  </div>
+  <div class="tabs">
+    <div class="tab" data-view="delivery">Delivery</div>
+    <div class="tab" data-view="picking">Picking</div>
+    <div class="tab" data-view="receipt">Receipt</div>
+    <div class="tab" data-view="settings">Settings</div>
+  </div>
+  <div class="main" id="main"></div>
+</div>
+
+<script>
+const state = { config: null, catalog: [], view: 'delivery', selectedSO: null, selectedPO: null, session: null };
+const $main = document.getElementById('main');
+
+function fmt(n){ if(n===null||n===undefined||n==='') return '—'; if(typeof n!=='number') return n;
+  return Math.round(n*100)/100 === Math.round(n) ? Math.round(n).toLocaleString() : n.toFixed(2); }
+function today(){ return new Date().toISOString().slice(0,10); }
+
+// ---------------- Supabase connection + auth ----------------
+// Baked in so warehouse staff never see or type a Project URL/key — they only
+// ever see the sign-in screen (email + password). The publishable/anon key is
+// safe to ship in client code like this; real access control is the Row Level
+// Security policies + login on the Supabase project, not secrecy of this key.
+// If you ever rotate the key in Supabase, update it here and re-publish.
+const DEFAULT_CONFIG = {
+  url: 'https://lqlfmjqjtkfvkdimlcvj.supabase.co',
+  key: 'sb_publishable_rK8gwuct7u7pfeFVtMXowA_F_FnqqJ0'
+};
+let sb = null; // supabase client, created once we have url+key
+
+async function loadConfig(){
+  state.config = DEFAULT_CONFIG;
+}
+async function saveConfig(cfg){
+  state.config = cfg;
+}
+function ensureClient(){
+  if(!state.config || !state.config.url || !state.config.key) throw new Error('Not connected — set your Project URL and key in Settings.');
+  if(!sb) sb = window.supabase.createClient(state.config.url, state.config.key);
+  return sb;
+}
+
+function setConn(ok, label){
+  const el = document.getElementById('connStatus');
+  el.className = 'conn ' + (ok===null ? '' : (ok ? 'ok' : 'err'));
+  document.getElementById('connLabel').textContent = label;
+}
+async function testConnection(){
+  if(!state.config || !state.config.url || !state.config.key){ setConn(false,'no url set'); return false; }
+  try{
+    const client = ensureClient();
+    const { data: { session } } = await client.auth.getSession();
+    if(!session){ setConn(false, 'not logged in'); return false; }
+    state.session = session;
+    setConn(true, session.user.email);
+    return true;
+  }catch(e){ setConn(false, 'connection failed'); return false; }
+}
+async function signIn(email, password){
+  const client = ensureClient();
+  const { data, error } = await client.auth.signInWithPassword({ email, password });
+  if(error) throw new Error(error.message);
+  state.session = data.session;
+  return data;
+}
+async function signOut(){
+  if(sb) await sb.auth.signOut();
+  state.session = null;
+  setConn(false, 'signed out');
+}
+// Actively re-validates against Supabase (not just "do we have a cached
+// session object") — catches an AFK-expired session instead of silently
+// querying as an unauthenticated user and getting 0 rows back.
+async function verifySession(){
+  try{
+    const client = ensureClient();
+    const { data, error } = await client.auth.getUser();
+    if(error || !data.user){ state.session = null; setConn(false, 'session expired — please sign in again'); return false; }
+    const { data: { session } } = await client.auth.getSession();
+    state.session = session;
+    setConn(true, data.user.email);
+    return true;
+  }catch(e){ state.session = null; return false; }
+}
+
+// ---- field-name maps: Postgres snake_case -> the field names every render
+// function in this file already expects (unchanged from the Apps Script era) ----
+const FIELD_MAPS = {
+  masterCatalog: { zsku:'zSKU', barcode:'Barcode', sku:'SKU', item_name:'ItemName', moq:'MOQ', cost:'Cost',
+    price:'Price', referral_fee:'ReferralFee', outbound_fee:'OutboundFee', storage_cost:'StorageCost',
+    landed_cost:'LandedCost', net_margin:'NetMargin', margin_pct:'MarginPct', status:'Status',
+    margin_flag:'MarginFlag', brand:'Brand', supplier:'Supplier' },
+  salesOrder: { so_number:'SONumber', ship_date:'ShipDate', expected_sellable_date:'ExpectedSellableDate',
+    total_units_sent:'TotalUnitsSent', total_units_received:'TotalUnitsReceived', total_damaged:'TotalDamaged',
+    total_effective_qty:'TotalEffectiveQty', status:'Status', match_status:'MatchStatus', cancelled:'Cancelled' },
+  salesOrderLine: { so_number:'SONumber', line_num:'LineNum', zsku:'zSKU', qty_sent:'QtySent',
+    qty_received:'QtyReceived', qty_damaged:'QtyDamaged', discrepancy:'Discrepancy', line_status:'LineStatus',
+    confirmed_qty:'ConfirmedQty', shortage_reason:'ShortageReason', effective_qty:'EffectiveQty', so_cancelled:'SOCancelled' },
+  purchaseOrder: { po_number:'PONumber', po_date:'PODate', supplier:'Supplier', expected_delivery:'ExpectedDelivery',
+    status:'Status', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
+    total_received_qty:'TotalReceivedQty' },
+  purchaseOrderLine: { po_number:'PONumber', line_num:'LineNum', zsku:'zSKU', sku:'SKU', qty_ordered:'QtyOrdered',
+    unit_cost:'UnitCost', line_total:'LineTotal', qty_received:'QtyReceived', confirmed_qty:'ConfirmedQty',
+    effective_ordered_qty:'EffectiveOrderedQty' },
+};
+function remap(row, map){
+  const out = {};
+  for(const k in row) out[map[k] || k] = row[k];
+  return out;
+}
+const TABLES = {
+  masterCatalog: 'v_master_catalog', salesOrder: 'v_sales_orders', salesOrderLine: 'v_sales_order_lines',
+  purchaseOrder: 'v_purchase_orders', purchaseOrderLine: 'v_purchase_order_lines',
+};
+
+const tableCache = {};
+const CACHE_TTL = 10000; // shorter than the main dashboard — picking/receiving needs fresher data
+const UNCACHEABLE = new Set(['ping']);
+
+async function apiGetRaw(action){
+  if(action === 'ping'){ const { error } = await ensureClient().from('settings').select('id').limit(1); if(error) throw new Error(error.message); return { ok:true }; }
+  const table = TABLES[action];
+  if(!table) throw new Error('Unknown action: ' + action);
+  const { data, error } = await ensureClient().from(table).select('*');
+  if(error) throw new Error(error.message);
+  const map = FIELD_MAPS[action];
+  return map ? data.map(r => remap(r, map)) : data;
+}
+async function apiGet(action, force){
+  if(UNCACHEABLE.has(action)) return apiGetRaw(action);
+  const now = Date.now();
+  const cached = tableCache[action];
+  if(!force && cached && (now - cached.ts) < CACHE_TTL) return cached.data;
+  const data = await apiGetRaw(action);
+  tableCache[action] = { data, ts: now };
+  return data;
+}
+function invalidateCache(action){
+  if(action) delete tableCache[action];
+  else Object.keys(tableCache).forEach(k => delete tableCache[k]);
+}
+async function apiPost(action, payload){
+  const client = ensureClient();
+  let result;
+  switch(action){
+    case 'updatePickingConfirmation': {
+      const { error } = await client.from('sales_order_lines').update({ confirmed_qty: Number(payload.confirmedQty), shortage_reason: payload.shortageReason || null }).eq('so_number', payload.soNumber).eq('line_num', Number(payload.lineNum));
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'updateWarehouseReceipt': {
+      const { data, error } = await client.rpc('rpc_update_warehouse_receipt', { p_po_number: payload.poNumber, p_line_num: Number(payload.lineNum), p_received_qty: Number(payload.receivedQty) });
+      if(error) throw new Error(error.message); result = { ok:true, totalReceived: data }; break;
+    }
+    default: throw new Error('Unknown action: ' + action);
+  }
+  invalidateCache();
+  return result;
+}
+async function ensureCatalog(){
+  if(state.catalog.length) return state.catalog;
+  state.catalog = await apiGet('masterCatalog');
+  return state.catalog;
+}
+function resolveZsku(value, catalog){
+  const v = String(value||'').trim();
+  if(!v) return null;
+  const byZ = catalog.find(c => String(c.zSKU).trim() === v);
+  if(byZ) return byZ.zSKU;
+  const bySku = catalog.find(c => String(c.SKU).trim() === v);
+  if(bySku) return bySku.zSKU;
+  const byBarcode = catalog.find(c => String(c.Barcode||'').trim() === v && v !== '');
+  if(byBarcode) return byBarcode.zSKU;
+  return null;
+}
+
+// ---------------- camera barcode scanning ----------------
+let scannerInstance = null;
+function openScanModal(onResult){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal">
+    <h3>Scan a barcode</h3>
+    <div id="qr-reader"></div>
+    <button class="btn modal-close" id="scanCloseBtn">Cancel</button>
+  </div>`;
+  document.body.appendChild(overlay);
+  const cleanup = () => {
+    if(scannerInstance){ scannerInstance.stop().catch(()=>{}).then(()=>{ scannerInstance = null; }); }
+    overlay.remove();
+  };
+  document.getElementById('scanCloseBtn').onclick = cleanup;
+  scannerInstance = new Html5Qrcode('qr-reader');
+  scannerInstance.start(
+    { facingMode: 'environment' },
+    { fps: 10, qrbox: { width: 250, height: 150 } },
+    (decodedText) => { cleanup(); onResult(decodedText); },
+    () => {} // ignore per-frame decode misses
+  ).catch((err) => {
+    overlay.querySelector('#qr-reader').innerHTML = `<div class="empty" style="color:var(--red)">Could not access camera: ${err}. Check your browser's camera permission for this page.</div>`;
+  });
+}
+
+// ---------------- view routing ----------------
+function switchView(v){
+  state.view = v;
+  state.selectedSO = null;
+  state.selectedPO = null;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
+  render();
+}
+async function render(){
+  const v = state.view;
+  if(!state.config || !state.config.url || !state.config.key){
+    if(v !== 'settings'){ switchView('settings'); return; }
+  } else if(v !== 'settings'){
+    const valid = await verifySession();
+    if(!valid){ return renderLogin(); }
+  }
+  if(v === 'delivery') return renderDelivery();
+  if(v === 'picking') return state.selectedSO ? renderPicking() : renderPickingPicker();
+  if(v === 'receipt') return state.selectedPO ? renderReceipt() : renderReceiptPicker();
+  if(v === 'settings') return renderSettings();
+}
+
+function renderLogin(){
+  $main.innerHTML = `
+    <h2 class="view-title">Sign in</h2>
+    <p class="view-sub">Log in with your team account to continue.</p>
+    <div class="panel">
+      <form class="form" id="loginForm">
+        <div class="field"><label>Email</label><input type="email" name="email" required style="width:100%;"></div>
+        <div class="field"><label>Password</label><input type="password" name="password" required style="width:100%;"></div>
+        <div class="form-foot"><button class="btn primary" type="submit">Sign in</button><span class="msg" id="loginMsg"></span></div>
+      </form>
+    </div>`;
+  document.getElementById('loginForm').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = Object.fromEntries(new FormData(ev.target));
+    const msg = document.getElementById('loginMsg');
+    msg.className = 'msg'; msg.textContent = 'Signing in…';
+    try{
+      await signIn(f.email, f.password);
+      setConn(true, f.email);
+      render();
+    }catch(e){ msg.className = 'msg err'; msg.textContent = e.message; }
+  };
+}
+
+function viewHead(title, sub){
+  return `<h2 class="view-title">${title}</h2><p class="view-sub">${sub}</p>`;
+}
+function panelShell(){ return `<div class="panel" id="panelBody"><div class="loading">loading…</div></div>`; }
+function setPanel(html){ const p = document.getElementById('panelBody'); if(p) p.outerHTML = `<div class="panel" id="panelBody">${html}</div>`; }
+function emptyState(msg){ return `<div class="empty">${msg}</div>`; }
+function errorState(e){ return `<div class="empty" style="color:var(--red)">Couldn't load: ${e.message}</div>`; }
+
+// ---------------- Delivery ----------------
+async function renderDelivery(){
+  $main.innerHTML = viewHead('Delivery', 'Sales Orders scheduled to ship to Noon FBN. Tap one to start picking.') + panelShell();
+  try{
+    const orders = await apiGet('salesOrder');
+    const lines = await apiGet('salesOrderLine');
+    const pending = orders.filter(o => o.Cancelled !== 'Yes').map(o => {
+      const myLines = lines.filter(l => l.SONumber === o.SONumber);
+      const unconfirmed = myLines.filter(l => l.ConfirmedQty === '' || l.ConfirmedQty === undefined).length;
+      return Object.assign({}, o, { lineCount: myLines.length, unconfirmed });
+    }).filter(o => o.unconfirmed > 0);
+    const cardsHtml = pending.length ? pending.map(o => `
+      <div class="order-card" data-so="${o.SONumber}">
+        <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipDate||''} · ${o.lineCount} line(s), ${o.unconfirmed} not yet picked</div></div>
+        <span class="chip amber">Needs picking</span>
+      </div>`).join('') : '';
+    setPanel(cardsHtml || emptyState('Nothing scheduled — every active Sales Order has been picked.'));
+    document.querySelectorAll('.order-card[data-so]').forEach(card => {
+      card.onclick = () => { state.selectedSO = card.dataset.so; state.view = 'picking';
+        document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === 'picking'));
+        renderPicking(); };
+    });
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+// ---------------- Picking ----------------
+async function renderPickingPicker(){
+  $main.innerHTML = viewHead('Picking', 'Choose a Sales Order to pick.') + panelShell();
+  try{
+    const orders = await apiGet('salesOrder');
+    const active = orders.filter(o => o.Cancelled !== 'Yes');
+    const cardsHtml = active.length ? active.slice().reverse().map(o => `
+      <div class="order-card" data-so="${o.SONumber}">
+        <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipDate||''} · ${o.Status||''}</div></div>
+      </div>`).join('') : '';
+    setPanel(cardsHtml || emptyState('No active Sales Orders.'));
+    document.querySelectorAll('.order-card[data-so]').forEach(card => {
+      card.onclick = () => { state.selectedSO = card.dataset.so; renderPicking(); };
+    });
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderPicking(){
+  const soNumber = state.selectedSO;
+  $main.innerHTML = `<a href="#" class="back" id="backPicking">← Choose a different order</a>` +
+    viewHead(`Picking — ${soNumber}`, 'Confirm what was actually picked for each item. A shortfall needs a reason before saving.') + panelShell();
+  document.getElementById('backPicking').onclick = (e) => { e.preventDefault(); state.selectedSO = null; renderPickingPicker(); };
+  try{
+    const catalog = await ensureCatalog();
+    const lines = (await apiGet('salesOrderLine', true)).filter(l => l.SONumber === soNumber);
+    if(!lines.length){ setPanel(emptyState('This order has no lines yet.')); return; }
+
+    const reasons = ['Stock shortfall - need to investigate','Reserved for another order','Damaged in warehouse','Miscount / data entry error','Other'];
+    const rowsHtml = lines.map(l => `
+      <div class="line-row" data-zsku="${l.zSKU}" data-linenum="${l.LineNum}">
+        <div class="line-top">
+          <div><div class="line-sku">${l.SKU}</div><div class="line-name">${l.ItemName}</div></div>
+          <div class="line-planned">plan: ${fmt(l.QtySent)}</div>
+        </div>
+        <div class="line-fields">
+          <input type="number" class="confirmInput" min="0" value="${l.ConfirmedQty!==''&&l.ConfirmedQty!==undefined?l.ConfirmedQty:l.QtySent}">
+          <select class="shortage-select reasonSelect" style="display:${l.ConfirmedQty && l.ConfirmedQty < l.QtySent ? '' : 'none'};">
+            ${reasons.map(r => `<option ${l.ShortageReason===r?'selected':''}>${r}</option>`).join('')}
+          </select>
+        </div>
+      </div>`).join('');
+
+    setPanel(`
+      <div class="scan-bar">
+        <input type="text" id="scanInput" placeholder="Scan or type a barcode, then Enter">
+        <button class="btn" id="scanCamBtn">📷</button>
+      </div>
+      ${rowsHtml}
+      <div style="padding:16px;">
+        <button class="btn primary full" id="savePickingBtn">Save picking confirmation</button>
+        <div class="msg" id="pickingMsg" style="padding-top:10px;"></div>
+      </div>
+    `);
+
+    document.querySelectorAll('.confirmInput').forEach((inp, i) => {
+      const row = inp.closest('.line-row');
+      const planned = Number(lines[i].QtySent);
+      inp.oninput = () => {
+        const sel = row.querySelector('.reasonSelect');
+        sel.style.display = Number(inp.value) < planned ? '' : 'none';
+      };
+    });
+
+    const scanInput = document.getElementById('scanInput');
+    const handleScan = (code) => {
+      const z = resolveZsku(code, catalog);
+      document.querySelectorAll('.line-row').forEach(r => r.classList.remove('highlight'));
+      if(!z){ scanInput.value = ''; alert('No catalog match for: ' + code); return; }
+      const row = document.querySelector(`.line-row[data-zsku="${z}"]`);
+      if(!row){ scanInput.value = ''; alert('That SKU is not on this order.'); return; }
+      row.classList.add('highlight');
+      row.scrollIntoView({ behavior:'smooth', block:'center' });
+      row.querySelector('.confirmInput').focus();
+      scanInput.value = '';
+    };
+    scanInput.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); handleScan(scanInput.value.trim()); } };
+    document.getElementById('scanCamBtn').onclick = () => openScanModal(handleScan);
+
+    document.getElementById('savePickingBtn').onclick = async () => {
+      const btn = document.getElementById('savePickingBtn');
+      const msg = document.getElementById('pickingMsg');
+      btn.disabled = true; msg.className = 'msg'; msg.textContent = 'Saving…';
+      try{
+        const rows = document.querySelectorAll('.line-row');
+        for(const row of rows){
+          const lineNum = row.dataset.linenum;
+          const confirmedQty = row.querySelector('.confirmInput').value;
+          const reasonSel = row.querySelector('.reasonSelect');
+          const shortageReason = reasonSel.style.display !== 'none' ? reasonSel.value : '';
+          await apiPost('updatePickingConfirmation', { soNumber, lineNum, confirmedQty, shortageReason });
+        }
+        msg.className = 'msg ok'; msg.textContent = 'Saved.';
+        setTimeout(() => { state.selectedSO = null; renderDelivery(); switchView('delivery'); }, 700);
+      }catch(e){ msg.className = 'msg err'; msg.textContent = e.message; btn.disabled = false; }
+    };
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+// ---------------- Receipt ----------------
+async function renderReceiptPicker(){
+  $main.innerHTML = viewHead('Receipt', 'Choose a Purchase Order to receive against.') + panelShell();
+  try{
+    const orders = await apiGet('purchaseOrder');
+    const eligible = orders.filter(o => o.Status !== 'Cancelled');
+    const cardsHtml = eligible.length ? eligible.slice().reverse().map(o => {
+      const done = Number(o.TotalConfirmedQty||0) > 0 && Number(o.TotalReceivedQty||0) >= Number(o.TotalConfirmedQty||0);
+      return `<div class="order-card" data-po="${o.PONumber}">
+        <div><div class="id">${o.PONumber}</div><div class="meta">${o.Supplier||''} · received ${fmt(o.TotalReceivedQty)}/${fmt(o.TotalConfirmedQty)}</div></div>
+        ${done ? `<span class="chip green">Fully received</span>` : `<span class="chip amber">Pending</span>`}
+      </div>`;
+    }).join('') : '';
+    setPanel(cardsHtml || emptyState('No purchase orders to receive against.'));
+    document.querySelectorAll('.order-card[data-po]').forEach(card => {
+      card.onclick = () => { state.selectedPO = card.dataset.po; renderReceipt(); };
+    });
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderReceipt(){
+  const poNumber = state.selectedPO;
+  $main.innerHTML = `<a href="#" class="back" id="backReceipt">← Choose a different order</a>` +
+    viewHead(`Receipt — ${poNumber}`, 'Enter how many units arrived in this delivery. Adds to any already received on each line.') + panelShell();
+  document.getElementById('backReceipt').onclick = (e) => { e.preventDefault(); state.selectedPO = null; renderReceiptPicker(); };
+  try{
+    const catalog = await ensureCatalog();
+    const lines = (await apiGet('purchaseOrderLine', true)).filter(l => l.PONumber === poNumber);
+    if(!lines.length){ setPanel(emptyState('This order has no lines yet.')); return; }
+
+    const rowsHtml = lines.map(l => `
+      <div class="line-row" data-zsku="${l.zSKU}" data-linenum="${l.LineNum}">
+        <div class="line-top">
+          <div><div class="line-sku">${l.SKU}</div></div>
+          <div class="line-planned">confirmed: ${fmt(l.ConfirmedQty)} · received so far: ${fmt(l.QtyReceived)}</div>
+        </div>
+        <div class="line-fields">
+          <input type="number" class="receiveInput" min="0" value="0" placeholder="Qty now">
+        </div>
+      </div>`).join('');
+
+    setPanel(`
+      <div class="scan-bar">
+        <input type="text" id="scanInput" placeholder="Scan or type a barcode, then Enter">
+        <button class="btn" id="scanCamBtn">📷</button>
+      </div>
+      ${rowsHtml}
+      <div style="padding:16px;">
+        <button class="btn primary full" id="saveReceiptBtn">Save receipt</button>
+        <div class="msg" id="receiptMsg" style="padding-top:10px;"></div>
+      </div>
+    `);
+
+    const scanInput = document.getElementById('scanInput');
+    const handleScan = (code) => {
+      const z = resolveZsku(code, catalog);
+      document.querySelectorAll('.line-row').forEach(r => r.classList.remove('highlight'));
+      if(!z){ scanInput.value = ''; alert('No catalog match for: ' + code); return; }
+      const row = document.querySelector(`.line-row[data-zsku="${z}"]`);
+      if(!row){ scanInput.value = ''; alert('That SKU is not on this order.'); return; }
+      row.classList.add('highlight');
+      row.scrollIntoView({ behavior:'smooth', block:'center' });
+      const inp = row.querySelector('.receiveInput');
+      inp.focus(); inp.select();
+      scanInput.value = '';
+    };
+    scanInput.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); handleScan(scanInput.value.trim()); } };
+    document.getElementById('scanCamBtn').onclick = () => openScanModal(handleScan);
+
+    document.getElementById('saveReceiptBtn').onclick = async () => {
+      const btn = document.getElementById('saveReceiptBtn');
+      const msg = document.getElementById('receiptMsg');
+      btn.disabled = true; msg.className = 'msg'; msg.textContent = 'Saving…';
+      try{
+        const rows = document.querySelectorAll('.line-row');
+        let any = false;
+        for(const row of rows){
+          const qty = Number(row.querySelector('.receiveInput').value || 0);
+          if(qty <= 0) continue;
+          any = true;
+          await apiPost('updateWarehouseReceipt', { poNumber, lineNum: row.dataset.linenum, receivedQty: qty });
+        }
+        if(!any){ msg.className = 'msg err'; msg.textContent = 'Enter at least one qty > 0.'; btn.disabled = false; return; }
+        msg.className = 'msg ok'; msg.textContent = 'Saved.';
+        setTimeout(() => renderReceipt(), 700);
+      }catch(e){ msg.className = 'msg err'; msg.textContent = e.message; btn.disabled = false; }
+    };
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+// ---------------- Settings ----------------
+// No Project URL / key fields here on purpose — the connection is baked into
+// this file (DEFAULT_CONFIG above), so warehouse staff only ever see their
+// account status and a sign-out button.
+function renderSettings(){
+  $main.innerHTML = viewHead('Settings', 'Account') + panelShell();
+  setPanel(
+    state.session
+      ? `<div style="padding:16px;">
+          <div style="color:var(--text-dim);font-size:13px;margin-bottom:12px;">Signed in as <b style="color:var(--text);">${state.session.user.email}</b></div>
+          <button class="btn full" id="signOutBtn">Sign out</button>
+        </div>`
+      : emptyState('Not signed in.')
+  );
+  const signOutBtn = document.getElementById('signOutBtn');
+  if(signOutBtn) signOutBtn.onclick = async () => { await signOut(); render(); };
+}
+
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => switchView(t.dataset.view));
+
+(async function init(){
+  await loadConfig();
+  if(state.config && state.config.url && state.config.key){
+    try{
+      ensureClient();
+      sb.auth.onAuthStateChange((event, session) => {
+        state.session = session;
+        if(event === 'SIGNED_OUT') setConn(false, 'signed out');
+        render();
+      });
+    }catch(e){ /* bad saved config — Settings screen will handle it */ }
+  }
+  render(); // render() itself validates the session before showing any data view
+})();
+</script>
+</body>
+</html>

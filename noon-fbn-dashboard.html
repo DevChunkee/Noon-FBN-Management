@@ -1,0 +1,1871 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Noon FBN Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+  :root{
+    --bg:#0F1115; --panel:#171A21; --panel-alt:#1D2129; --border:#272C36;
+    --text:#E6E8EC; --text-dim:#8A93A3; --text-faint:#5A6270;
+    --amber:#E8A33D; --green:#4FB286; --blue:#5B8DEF; --red:#D9736E;
+    --mono: 'IBM Plex Mono', ui-monospace, monospace;
+    --sans: 'IBM Plex Sans', system-ui, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;}
+  .app{display:flex;min-height:100vh;}
+
+  /* ---- sidebar ---- */
+  .rail{width:220px;flex:0 0 220px;background:var(--panel);border-right:1px solid var(--border);
+    display:flex;flex-direction:column;padding:20px 0;}
+  .brand{padding:0 20px 20px;border-bottom:1px solid var(--border);margin-bottom:12px;}
+  .brand-title{font-weight:700;font-size:15px;letter-spacing:.2px;}
+  .brand-sub{color:var(--text-dim);font-size:11px;margin-top:3px;font-family:var(--mono);}
+  .nav-item{display:flex;align-items:center;gap:10px;padding:10px 20px;color:var(--text-dim);
+    cursor:pointer;border-left:2px solid transparent;font-size:13.5px;}
+  .nav-item:hover{color:var(--text);background:var(--panel-alt);}
+  .nav-item.active{color:var(--text);border-left-color:var(--blue);background:var(--panel-alt);font-weight:500;}
+  .nav-dot{width:6px;height:6px;border-radius:50%;background:var(--text-faint);flex:0 0 6px;}
+  .nav-item.active .nav-dot{background:var(--blue);}
+  .nav-section{padding:16px 20px 6px;font-size:10.5px;letter-spacing:.4px;color:var(--text-faint);
+    text-transform:uppercase;border-top:1px solid var(--border);margin-top:6px;}
+  .rail-foot{margin-top:auto;padding:14px 20px 0;border-top:1px solid var(--border);}
+  .conn{display:flex;align-items:center;gap:7px;font-size:11.5px;font-family:var(--mono);color:var(--text-faint);}
+  .conn-dot{width:7px;height:7px;border-radius:50%;background:var(--text-faint);}
+  .conn.ok .conn-dot{background:var(--green);}
+  .conn.err .conn-dot{background:var(--red);}
+
+  /* ---- main ---- */
+  .main{flex:1;padding:28px 36px;overflow-x:auto;}
+  .view-head{margin-bottom:22px;}
+  .view-title{font-size:20px;font-weight:700;margin:0 0 4px;}
+  .view-sub{color:var(--text-dim);font-size:13px;margin:0;max-width:620px;line-height:1.5;}
+
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:20px;}
+  .panel-head{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;}
+  .panel-head h3{margin:0;font-size:13px;font-weight:600;}
+  .btn{background:var(--panel-alt);border:1px solid var(--border);color:var(--text);border-radius:5px;
+    padding:7px 13px;font-size:12.5px;font-family:var(--sans);cursor:pointer;font-weight:500;}
+  .btn:hover{border-color:var(--text-faint);}
+  .btn.primary{background:var(--blue);border-color:var(--blue);color:#0B0F16;}
+  .btn.primary:hover{filter:brightness(1.08);}
+  .btn:disabled{opacity:.4;cursor:default;}
+
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{text-align:left;color:var(--text-dim);font-weight:500;font-size:11.5px;text-transform:none;
+    padding:9px 14px;border-bottom:1px solid var(--border);white-space:nowrap;}
+  td{padding:9px 14px;border-bottom:1px solid var(--border);white-space:nowrap;}
+  tr:last-child td{border-bottom:none;}
+  tr:hover td{background:var(--panel-alt);}
+  .num{font-family:var(--mono);text-align:right;}
+  .sku{font-family:var(--mono);color:var(--text-dim);}
+
+  .chip{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-family:var(--mono);font-weight:500;}
+  .chip.amber{background:rgba(232,163,61,.15);color:var(--amber);}
+  .chip.green{background:rgba(79,178,134,.15);color:var(--green);}
+  .chip.red{background:rgba(217,115,110,.15);color:var(--red);}
+
+  .empty{padding:40px 20px;text-align:center;color:var(--text-dim);font-size:13px;}
+  .loading{padding:40px 20px;text-align:center;color:var(--text-faint);font-size:13px;font-family:var(--mono);}
+
+  .form{padding:18px;display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  .form.wide{grid-template-columns:1fr;}
+  .field{display:flex;flex-direction:column;gap:5px;}
+  .field.span2{grid-column:span 2;}
+  label{font-size:12px;color:var(--text-dim);}
+  input, select, textarea{background:var(--bg);border:1px solid var(--border);color:var(--text);
+    border-radius:5px;padding:8px 10px;font-size:13px;font-family:var(--sans);}
+  input:focus, select:focus, textarea:focus{outline:none;border-color:var(--blue);}
+  .form-foot{grid-column:span 2;display:flex;gap:10px;align-items:center;padding-top:4px;}
+  .msg{font-size:12.5px;font-family:var(--mono);}
+  .msg.ok{color:var(--green);}
+  .msg.err{color:var(--red);}
+
+  .weekly-row{display:grid;grid-template-columns:110px 1fr 120px 120px;gap:10px;align-items:center;
+    padding:9px 16px;border-bottom:1px solid var(--border);}
+  .weekly-row.head{color:var(--text-dim);font-size:11.5px;padding-bottom:8px;}
+  .weekly-row input{width:100%;}
+
+  .setup-note{background:var(--panel-alt);border:1px solid var(--border);border-radius:6px;padding:16px 18px;
+    font-size:12.5px;color:var(--text-dim);line-height:1.7;margin-bottom:18px;}
+  .setup-note code{font-family:var(--mono);background:var(--bg);padding:1px 5px;border-radius:3px;color:var(--text);}
+  .setup-note ol{margin:8px 0 0;padding-left:20px;}
+
+  .importzone{border:1.5px dashed var(--border);border-radius:6px;padding:22px;text-align:center;
+    color:var(--text-dim);font-size:13px;margin:16px;cursor:pointer;}
+  .importzone:hover{border-color:var(--blue);color:var(--text);}
+  .importzone input{display:none;}
+  .batch-bar{display:flex;gap:10px;align-items:center;padding:14px 16px;border-top:1px solid var(--border);flex-wrap:wrap;}
+  .batch-bar input{width:180px;}
+  .batch-bar label{font-size:12px;color:var(--text-dim);margin-right:4px;}
+  select.mapSelect{font-size:12px;padding:5px 7px;}
+  .toggle-group{display:flex;gap:6px;}
+  .toggle-btn{background:var(--panel-alt);border:1px solid var(--border);color:var(--text-dim);
+    border-radius:5px;padding:6px 12px;font-size:12.5px;cursor:pointer;font-family:var(--sans);}
+  .toggle-btn.active{background:var(--blue);border-color:var(--blue);color:#0B0F16;font-weight:600;}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="rail">
+    <div class="brand">
+      <div class="brand-title">Noon FBN Console</div>
+      <div class="brand-sub">live sheet ops</div>
+    </div>
+    <div class="nav-item" data-view="catalog"><span class="nav-dot"></span>Master Catalog</div>
+    <div class="nav-item" data-view="salesorders"><span class="nav-dot"></span>Sales Orders</div>
+    <div class="nav-item" data-view="purchaseorders"><span class="nav-dot"></span>Purchase Orders</div>
+    <div class="nav-item" data-view="ship"><span class="nav-dot"></span>Ship to Noon</div>
+    <div class="nav-item" data-view="restock"><span class="nav-dot"></span>Restock internal</div>
+    <div class="nav-item" data-view="shipments"><span class="nav-dot"></span>Shipments</div>
+    <div class="nav-item" data-view="weekly"><span class="nav-dot"></span>Weekly stock update</div>
+    <div class="nav-item" data-view="grn"><span class="nav-dot"></span>Log GRN</div>
+    <div class="nav-item" data-view="adjust"><span class="nav-dot"></span>Log adjustment</div>
+    <div class="nav-item" data-view="salesfunnel"><span class="nav-dot"></span>Log Monthly Sales</div>
+    <div class="nav-section">Reports</div>
+    <div class="nav-item" data-view="report-sales"><span class="nav-dot"></span>Sales Report</div>
+    <div class="nav-item" data-view="report-fillrate"><span class="nav-dot"></span>Supplier Fill Rate</div>
+    <div class="nav-item" data-view="report-insights"><span class="nav-dot"></span>Product Insights</div>
+    <div class="nav-item" data-view="settings"><span class="nav-dot"></span>Settings</div>
+    <div class="rail-foot">
+      <div class="conn" id="connStatus"><span class="conn-dot"></span><span id="connLabel">not connected</span></div>
+    </div>
+  </div>
+
+  <div class="main" id="main"></div>
+</div>
+
+<script>
+const state = { config: null, catalog: [], view: 'catalog', selectedSO: null, selectedPO: null, session: null };
+const $main = document.getElementById('main');
+
+function fmt(n){ if(n===null||n===undefined||n==='') return '—'; if(typeof n!=='number') return n;
+  return Math.round(n*100)/100 === Math.round(n) ? Math.round(n).toLocaleString() : n.toFixed(2); }
+function today(){ return new Date().toISOString().slice(0,10); }
+
+// ---------------- Supabase connection + auth ----------------
+// Baked in so you don't have to re-enter the Project URL/key every time this
+// file is reopened (localStorage can get wiped when a local file moves, gets
+// re-downloaded, or the browser clears local-file site data). The
+// publishable/anon key is safe to ship in client code like this — it's
+// designed to be public; real access control is the Row Level Security
+// policies + login on the Supabase project, not secrecy of this key.
+// TO CHANGE PROJECT OR ROTATE THE KEY: edit the two values below, save, and
+// re-host/re-share this file.
+const DEFAULT_CONFIG = {
+  url: 'https://lqlfmjqjtkfvkdimlcvj.supabase.co',
+  key: 'sb_publishable_rK8gwuct7u7pfeFVtMXowA_F_FnqqJ0'
+};
+let sb = null; // supabase client, created once we have url+key
+
+async function loadConfig(){
+  state.config = DEFAULT_CONFIG;
+}
+async function saveConfig(cfg){
+  state.config = cfg;
+}
+function ensureClient(){
+  if(!state.config || !state.config.url || !state.config.key) throw new Error('Not connected — set your Project URL and key in Settings.');
+  if(!sb) sb = window.supabase.createClient(state.config.url, state.config.key);
+  return sb;
+}
+
+function setConn(ok, label){
+  const el = document.getElementById('connStatus');
+  el.className = 'conn ' + (ok===null ? '' : (ok ? 'ok' : 'err'));
+  document.getElementById('connLabel').textContent = label;
+}
+async function testConnection(){
+  if(!state.config || !state.config.url || !state.config.key){ setConn(false,'no url set'); return false; }
+  try{
+    const client = ensureClient();
+    const { data: { session } } = await client.auth.getSession();
+    if(!session){ setConn(false, 'not logged in'); return false; }
+    state.session = session;
+    setConn(true, session.user.email);
+    return true;
+  }catch(e){ setConn(false, 'connection failed'); return false; }
+}
+async function signIn(email, password){
+  const client = ensureClient();
+  const { data, error } = await client.auth.signInWithPassword({ email, password });
+  if(error) throw new Error(error.message);
+  state.session = data.session;
+  return data;
+}
+async function signOut(){
+  if(sb) await sb.auth.signOut();
+  state.session = null;
+  setConn(false, 'signed out');
+}
+
+const tableCache = {};
+const CACHE_TTL = 20000; // 20s — long enough that bouncing between modules feels instant
+function invalidateCache(action){
+  if(action) delete tableCache[action];
+  else Object.keys(tableCache).forEach(k => delete tableCache[k]);
+}
+function refreshAll(){
+  invalidateCache();
+  state.catalog = [];
+  render();
+}
+
+// ---- field-name maps: Postgres snake_case -> the field names every render
+// function in this file already expects (unchanged from the Apps Script era) ----
+const FIELD_MAPS = {
+  masterCatalog: { zsku:'zSKU', barcode:'Barcode', sku:'SKU', item_name:'ItemName', moq:'MOQ', cost:'Cost',
+    price:'Price', referral_fee:'ReferralFee', outbound_fee:'OutboundFee', storage_cost:'StorageCost',
+    landed_cost:'LandedCost', net_margin:'NetMargin', margin_pct:'MarginPct', status:'Status',
+    margin_flag:'MarginFlag', brand:'Brand', supplier:'Supplier' },
+  noonInventory: { zsku:'zSKU', sku:'SKU', item_name:'ItemName', report_date:'ReportDate', saleable_qty:'SaleableQty',
+    damaged_qty:'DamagedQty', in_transit_qty:'InTransitQty', total_position:'TotalPosition',
+    avg_weekly_sales:'AvgWeeklySales', weeks_of_cover:'WeeksOfCover', reorder_flag:'ReorderFlag' },
+  monthlySalesLog: { month:'Month', zsku:'zSKU', sku:'SKU', item_name:'ItemName', units_sold:'UnitsSold',
+    revenue:'Revenue', referral_fee_paid:'ReferralFeePaid', net_revenue:'NetRevenue' },
+  salesFunnelLog: { period:'Period', zsku:'zSKU', sku:'SKU', item_name:'ItemName', impressions:'Impressions',
+    gvs:'GVs', atcs:'ATCs', units:'Units', gmv:'GMV', ctr:'CTR', cr:'CR', atc_cr:'ATCCR', cart_cr:'CartCR' },
+  salesOrder: { so_number:'SONumber', ship_date:'ShipDate', expected_sellable_date:'ExpectedSellableDate',
+    total_units_sent:'TotalUnitsSent', total_units_received:'TotalUnitsReceived', total_damaged:'TotalDamaged',
+    total_effective_qty:'TotalEffectiveQty', status:'Status', match_status:'MatchStatus', cancelled:'Cancelled' },
+  salesOrderLine: { so_number:'SONumber', line_num:'LineNum', zsku:'zSKU', qty_sent:'QtySent',
+    qty_received:'QtyReceived', qty_damaged:'QtyDamaged', discrepancy:'Discrepancy', line_status:'LineStatus',
+    confirmed_qty:'ConfirmedQty', shortage_reason:'ShortageReason', effective_qty:'EffectiveQty', so_cancelled:'SOCancelled' },
+  purchaseOrder: { po_number:'PONumber', po_date:'PODate', supplier:'Supplier', expected_delivery:'ExpectedDelivery',
+    status:'Status', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
+    total_received_qty:'TotalReceivedQty' },
+  purchaseOrderLine: { po_number:'PONumber', line_num:'LineNum', zsku:'zSKU', sku:'SKU', qty_ordered:'QtyOrdered',
+    unit_cost:'UnitCost', line_total:'LineTotal', qty_received:'QtyReceived', confirmed_qty:'ConfirmedQty',
+    effective_ordered_qty:'EffectiveOrderedQty' },
+  replenishmentPlanner: { zsku:'zSKU', sku:'SKU', item_name:'ItemName', avg_weekly_sales:'AvgWeeklySales',
+    growth_adjusted_weekly_sales:'GrowthAdjWeeklySales', noon_saleable_qty:'NoonSaleableQty', in_transit_qty:'InTransitQty',
+    weeks_on_hand:'WeeksOnHand', qty_needed:'QtyNeeded', suggested_shipment_qty:'SuggestedShipQty', moq:'MOQ', ship_qty:'ShipQty' },
+  internalReplenishment: { zsku:'zSKU', sku:'SKU', item_name:'ItemName', avg_weekly_demand:'AvgWeeklyDemand',
+    growth_adjusted_weekly_demand:'GrowthAdjWeeklyDemand', internal_on_hand:'InternalOnHand', open_po_qty:'OpenPOQty',
+    weeks_of_cover:'WeeksOfCover', qty_needed:'QtyNeeded', suggested_po_qty:'SuggestedPOQty', moq:'MOQ', po_qty:'POQty' },
+  grnLog: { grn_date:'GRNDate', grn_number:'GRNNumber', so_number:'SONumber', zsku:'zSKU', qty_received:'QtyReceived',
+    qty_damaged:'QtyDamaged', notes:'Notes' },
+  weeklyStockLog: { week_ending:'WeekEnding', zsku:'zSKU', saleable_qty:'SaleableQty' },
+  adjustmentLog: { adj_date:'Date', type:'Type', zsku:'zSKU', qty:'Qty', reason:'Reason' },
+};
+
+function remap(row, map){
+  const out = {};
+  for(const k in row) out[map[k] || k] = row[k];
+  return out;
+}
+// Adds SKU/ItemName from the (already-cached) catalog for logs that don't carry it themselves.
+function enrichSkuName(row){
+  const c = state.catalog.find(x => x.zSKU === row.zSKU);
+  if(c){ row.SKU = row.SKU || c.SKU; row.ItemName = row.ItemName || c.ItemName; }
+  return row;
+}
+
+const TABLES = {
+  masterCatalog: 'v_master_catalog', noonInventory: 'noon_fbn_inventory', monthlySalesLog: 'v_monthly_sales_log',
+  salesFunnelLog: 'v_sales_funnel_log', salesOrder: 'v_sales_orders', salesOrderLine: 'v_sales_order_lines',
+  purchaseOrder: 'v_purchase_orders', purchaseOrderLine: 'v_purchase_order_lines',
+  replenishmentPlanner: 'v_replenishment_planner', internalReplenishment: 'v_internal_wh_replenishment',
+  grnLog: 'grn_log', weeklyStockLog: 'weekly_saleable_stock_log', adjustmentLog: 'inventory_adjustments',
+};
+
+async function apiGetRaw(action){
+  if(action === 'ping'){ const { error } = await ensureClient().from('settings').select('id').limit(1); if(error) throw new Error(error.message); return { ok:true }; }
+  if(action === 'nextSONumber'){ const { data, error } = await ensureClient().rpc('rpc_next_so_number'); if(error) throw new Error(error.message); return { number: data }; }
+  if(action === 'nextPONumber'){ const { data, error } = await ensureClient().rpc('rpc_next_po_number'); if(error) throw new Error(error.message); return { number: data }; }
+
+  const table = TABLES[action];
+  if(!table) throw new Error('Unknown action: ' + action);
+  const { data, error } = await ensureClient().from(table).select('*');
+  if(error) throw new Error(error.message);
+  const map = FIELD_MAPS[action];
+  let rows = map ? data.map(r => remap(r, map)) : data;
+  if(['grnLog','weeklyStockLog','adjustmentLog'].includes(action)) rows = rows.map(enrichSkuName);
+  if(action === 'adjustmentLog') rows = rows.map(r => Object.assign(r, {
+    NetImpact: (r.Type === 'Damage / Write-off' || r.Type === 'Manual Deduction') ? -r.Qty : r.Qty
+  }));
+  return rows;
+}
+const UNCACHEABLE = new Set(['ping', 'nextSONumber', 'nextPONumber']);
+async function apiGet(action, force){
+  if(UNCACHEABLE.has(action)) return apiGetRaw(action);
+  const now = Date.now();
+  const cached = tableCache[action];
+  if(!force && cached && (now - cached.ts) < CACHE_TTL) return cached.data;
+  const data = await apiGetRaw(action);
+  tableCache[action] = { data, ts: now };
+  return data;
+}
+
+async function apiPost(action, payload){
+  const client = ensureClient();
+  let result;
+  switch(action){
+    case 'createSalesOrder': {
+      const { error } = await client.from('sales_orders').insert({ so_number: payload.soNumber, ship_date: payload.shipDate });
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'createPurchaseOrder': {
+      const { error } = await client.from('purchase_orders').insert({ po_number: payload.poNumber, po_date: payload.poDate, supplier: payload.supplier || null, expected_delivery: payload.expectedDelivery || null });
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'cancelSalesOrder': {
+      const { error } = await client.from('sales_orders').update({ cancelled: true }).eq('so_number', payload.soNumber);
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'cancelPurchaseOrder': {
+      const { error } = await client.from('purchase_orders').update({ status: 'Cancelled' }).eq('po_number', payload.poNumber);
+      if(error) throw new Error(error.message.includes('already received') ? error.message.replace(/^.*?:/, '').trim() : error.message);
+      result = { ok:true }; break;
+    }
+    case 'addSalesOrderLine': {
+      const { data, error } = await client.rpc('rpc_add_sales_order_line', { p_so_number: payload.soNumber, p_ship_date: payload.shipDate, p_zsku: payload.zsku, p_qty_sent: Number(payload.qtySent) });
+      if(error) throw new Error(error.message); result = { ok:true, lineNum: data ? data.line_num : null }; break;
+    }
+    case 'addSalesOrderBatch': {
+      const { data, error } = await client.rpc('rpc_add_sales_order_batch', { p_so_number: payload.soNumber, p_ship_date: payload.shipDate, p_items: payload.items.map(i => ({ zsku: i.zsku, qty: i.qtySent })) });
+      if(error) throw new Error(error.message); result = { linesAdded: data }; break;
+    }
+    case 'addPurchaseOrderBatch': {
+      const { data, error } = await client.rpc('rpc_add_purchase_order_batch', { p_po_number: payload.poNumber, p_po_date: payload.poDate, p_supplier: payload.supplier || null, p_expected_delivery: payload.expectedDelivery || null, p_items: payload.items.map(i => ({ zsku: i.zsku, qty: i.qtyOrdered })) });
+      if(error) throw new Error(error.message); result = { linesAdded: data }; break;
+    }
+    case 'updateCatalogStatus': {
+      const { error } = await client.from('master_catalog').update({ status: payload.status }).eq('zsku', payload.zsku);
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'addCatalogItem': {
+      const { error } = await client.from('master_catalog').insert({
+        zsku: payload.zsku, barcode: payload.barcode || null, sku: payload.sku || null, item_name: payload.itemName,
+        moq: Number(payload.moq||0), cost: Number(payload.cost||0), price: Number(payload.price||0),
+        outbound_fee: Number(payload.outboundFee||0), storage_cost: Number(payload.storageCost||0),
+        brand: payload.brand || null, supplier: payload.supplier || null
+      });
+      if(error) throw new Error(error.code === '23505' ? 'zSKU/SKU/Barcode already exists.' : error.message);
+      result = { ok:true }; break;
+    }
+    case 'addCatalogItemsBatch': {
+      const { data, error } = await client.rpc('rpc_add_catalog_items_batch', { p_items: payload.items });
+      if(error) throw new Error(error.message); result = { added: data.added, skippedCount: data.skipped }; break;
+    }
+    case 'updatePOConfirmation': {
+      const { error } = await client.from('purchase_order_lines').update({ confirmed_qty: Number(payload.confirmedQty) }).eq('po_number', payload.poNumber).eq('line_num', Number(payload.lineNum));
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'updatePickingConfirmation': {
+      const { error } = await client.from('sales_order_lines').update({ confirmed_qty: Number(payload.confirmedQty), shortage_reason: payload.shortageReason || null }).eq('so_number', payload.soNumber).eq('line_num', Number(payload.lineNum));
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'updateWarehouseReceipt': {
+      const { data, error } = await client.rpc('rpc_update_warehouse_receipt', { p_po_number: payload.poNumber, p_line_num: Number(payload.lineNum), p_received_qty: Number(payload.receivedQty) });
+      if(error) throw new Error(error.message); result = { ok:true, totalReceived: data }; break;
+    }
+    case 'addGRN': {
+      const { error } = await client.from('grn_log').insert({ grn_date: payload.grnDate, grn_number: payload.grnNumber, so_number: payload.soNumber, zsku: payload.zsku, qty_received: Number(payload.qtyReceived||0), qty_damaged: Number(payload.qtyDamaged||0), notes: payload.notes || null });
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'addGRNBatch': {
+      const rows = payload.items.map(i => ({ grn_date: i.grnDate, grn_number: i.grnNumber, so_number: i.soNumber, zsku: i.zsku, qty_received: Number(i.qtyReceived||0), qty_damaged: Number(i.qtyDamaged||0), notes: i.notes || null }));
+      const { error } = await client.from('grn_log').insert(rows);
+      if(error) throw new Error(error.message); result = { added: rows.length }; break;
+    }
+    case 'addAdjustment': {
+      const { error } = await client.from('inventory_adjustments').insert({ adj_date: payload.date, type: payload.type, zsku: payload.zsku, qty: Number(payload.qty), reason: payload.reason || null });
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'addAdjustmentBatch': {
+      const rows = payload.items.map(i => ({ adj_date: i.date, type: i.type, zsku: i.zsku, qty: Number(i.qty), reason: i.reason || null }));
+      const { error } = await client.from('inventory_adjustments').insert(rows);
+      if(error) throw new Error(error.message); result = { added: rows.length }; break;
+    }
+    case 'updateNoonWeekly': {
+      const noonRows = payload.items.map(i => ({ zsku: i.zsku, report_date: i.reportDate, saleable_qty: Number(i.saleableQty||0), damaged_qty: Number(i.damagedQty||0) }));
+      const weeklyRows = payload.items.map(i => ({ week_ending: i.reportDate, zsku: i.zsku, saleable_qty: Number(i.saleableQty||0) }));
+      const r1 = await client.from('noon_fbn_inventory').upsert(noonRows, { onConflict: 'zsku' });
+      if(r1.error) throw new Error(r1.error.message);
+      const r2 = await client.from('weekly_saleable_stock_log').insert(weeklyRows);
+      if(r2.error) throw new Error(r2.error.message);
+      result = { updated: noonRows.length }; break;
+    }
+    case 'addSalesFunnelBatch': {
+      const rows = payload.items.map(i => ({ period: i.period, zsku: i.zsku, impressions: Number(i.impressions||0), gvs: Number(i.gvs||0), atcs: Number(i.atcs||0), units: Number(i.units||0), gmv: Number(i.gmv||0) }));
+      const { error } = await client.from('sales_funnel_log').insert(rows);
+      if(error) throw new Error(error.message); result = { added: rows.length }; break;
+    }
+    default: throw new Error('Unknown action: ' + action);
+  }
+  invalidateCache();
+  return result;
+}
+
+async function apiPostBatched(action, items, extraFields, resultKey, onProgress){
+  const CHUNK = 500;
+  let total = 0;
+  const chunks = [];
+  for(let i = 0; i < items.length; i += CHUNK) chunks.push(items.slice(i, i + CHUNK));
+  for(let i = 0; i < chunks.length; i++){
+    if(onProgress) onProgress(i + 1, chunks.length);
+    const r = await apiPost(action, Object.assign({}, extraFields, { items: chunks[i] }));
+    total += Number(r[resultKey] || 0);
+  }
+  return { total, chunks: chunks.length };
+}
+
+async function fetchWithTimeout(url, opts, ms){
+  // kept only because a couple of legacy call sites may still reference it; unused with Supabase.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms || 30000);
+  try{ return await fetch(url, Object.assign({}, opts, { signal: controller.signal })); }
+  finally{ clearTimeout(timer); }
+}
+
+async function ensureCatalog(){
+  if(state.catalog.length) return state.catalog;
+  state.catalog = await apiGet('masterCatalog');
+  return state.catalog;
+}
+async function ensureSalesOrders(){
+  return apiGet('salesOrder');
+}
+
+function readFileAsWorkbook(file){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read file'));
+    if(/\.csv$/i.test(file.name)){
+      reader.onload = () => { try{ resolve(XLSX.read(reader.result, {type:'string'})); }catch(e){ reject(e); } };
+      reader.readAsText(file);
+    }else{
+      reader.onload = () => { try{ resolve(XLSX.read(new Uint8Array(reader.result), {type:'array'})); }catch(e){ reject(e); } };
+      reader.readAsArrayBuffer(file);
+    }
+  });
+}
+function sheetRows(wb, name){
+  const ws = wb.Sheets[name || wb.SheetNames[0]];
+  if(!ws) return [];
+  return XLSX.utils.sheet_to_json(ws, { defval: '' });
+}
+// Resolves a raw value from an import file to a known zSKU, matching against
+// either the catalog's zSKU or SKU column. Returns null if no match.
+function resolveZsku(value, catalog){
+  const v = String(value||'').trim();
+  if(!v) return null;
+  const byZ = catalog.find(c => String(c.zSKU).trim() === v);
+  if(byZ) return byZ.zSKU;
+  const bySku = catalog.find(c => String(c.SKU).trim() === v);
+  if(bySku) return bySku.zSKU;
+  const byBarcode = catalog.find(c => String(c.Barcode||'').trim() === v && v !== '');
+  if(byBarcode) return byBarcode.zSKU;
+  return null;
+}
+function catalogLabel(zsku, catalog){
+  const c = catalog.find(x => x.zSKU === zsku);
+  return c ? `${c.SKU} — ${c.ItemName}` : zsku;
+}
+
+// Exports an array of row-objects as a downloadable .xlsx file, triggered
+// via a temporary object URL — works the same for a full table or a filtered
+// subset (e.g. one order's lines).
+function exportRows(rows, filename, sheetName){
+  if(!rows || !rows.length){ alert('Nothing to export yet.'); return; }
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName || 'Sheet1');
+  XLSX.writeFile(wb, filename);
+}
+
+// Downloads a blank fillable template — just the given header row, no data.
+// Used for imports the person prepares by hand (not Noon's own export files).
+function downloadTemplate(headers, filename){
+  const ws = XLSX.utils.aoa_to_sheet([headers]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Template');
+  XLSX.writeFile(wb, filename);
+}
+function exportBtnHtml(id, label){
+  return `<button class="btn" id="${id}">${label||'Export'}</button>`;
+}
+function templateBtnHtml(id, label){
+  return `<button class="btn" id="${id}">${label||'Download template'}</button>`;
+}
+
+// ---------------- views ----------------
+function switchView(v){
+  state.view = v;
+  state.selectedSO = null;
+  state.selectedPO = null;
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
+  render();
+}
+
+// Actively re-validates against Supabase (not just "do we have a cached
+// session object") — this is what catches an AFK-expired session instead
+// of silently querying as an unauthenticated user and getting 0 rows back.
+async function verifySession(){
+  try{
+    const client = ensureClient();
+    const { data, error } = await client.auth.getUser();
+    if(error || !data.user){ state.session = null; setConn(false, 'session expired — please sign in again'); return false; }
+    const { data: { session } } = await client.auth.getSession();
+    state.session = session;
+    setConn(true, data.user.email);
+    return true;
+  }catch(e){ state.session = null; return false; }
+}
+
+async function render(){
+  const v = state.view;
+  if(!state.config || !state.config.url || !state.config.key){
+    if(v !== 'settings'){ switchView('settings'); return; }
+  } else if(v !== 'settings'){
+    const valid = await verifySession();
+    if(!valid){ return renderLogin(); }
+  }
+  if(v === 'catalog') return renderCatalog();
+  if(v === 'salesorders') return renderSalesOrders();
+  if(v === 'purchaseorders') return renderPurchaseOrders();
+  if(v === 'ship') return renderReplenishment('replenishmentPlanner', 'Ship to Noon FBN', 'This week\'s shipment quantities — recalculates the moment you paste new weekly stock numbers.', 'ShipQty', 'SuggestedShipQty', 'NoonSaleableQty', 'Noon saleable', 'ship');
+  if(v === 'restock') return renderReplenishment('internalReplenishment', 'Restock internal WH', 'Purchase order quantities needed from your supplier, paced by supplier lead time.', 'POQty', 'SuggestedPOQty', 'InternalOnHand', 'Internal on hand', 'restock');
+  if(v === 'shipments') return renderShipments();
+  if(v === 'weekly') return renderWeekly();
+  if(v === 'grn') return renderGRN();
+  if(v === 'adjust') return renderAdjust();
+  if(v === 'salesfunnel') return renderSalesFunnel();
+  if(v === 'report-sales') return renderSalesReport();
+  if(v === 'report-fillrate') return renderFillRateReport();
+  if(v === 'report-insights') return renderProductInsights();
+  if(v === 'settings') return renderSettings();
+}
+
+function renderLogin(){
+  $main.innerHTML = `
+    <div style="max-width:360px;margin:60px auto;">
+      <h2 class="view-title">Sign in</h2>
+      <p class="view-sub">Log in with your team account to continue.</p>
+      <div class="panel">
+        <form class="form wide" id="loginForm">
+          <div class="field"><label>Email</label><input type="email" name="email" required style="width:100%;"></div>
+          <div class="field"><label>Password</label><input type="password" name="password" required style="width:100%;"></div>
+          <div class="form-foot"><button class="btn primary" type="submit">Sign in</button><span class="msg" id="loginMsg"></span></div>
+        </form>
+      </div>
+    </div>`;
+  document.getElementById('loginForm').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = Object.fromEntries(new FormData(ev.target));
+    const msg = document.getElementById('loginMsg');
+    msg.className = 'msg'; msg.textContent = 'Signing in…';
+    try{
+      await signIn(f.email, f.password);
+      setConn(true, f.email);
+      render();
+    }catch(e){ msg.className = 'msg err'; msg.textContent = e.message; }
+  };
+}
+
+async function renderCatalog(){
+  $main.innerHTML = viewHead('Master Catalog', 'Every SKU, its pricing, and status. Change Status inline; Margin Flag is automatic.') + panelShell('loading');
+  try{
+    state.catalog = await apiGet('masterCatalog');
+    const flagChip = (flag) => {
+      if(flag === 'Low Margin') return `<span class="chip amber">Low Margin</span>`;
+      if(flag === 'Discontinued') return `<span class="chip red">Discontinued</span>`;
+      if(flag === 'OK') return `<span class="chip green">OK</span>`;
+      return '—';
+    };
+    const rows = state.catalog.map(c => `
+      <tr data-zsku="${c.zSKU}">
+        <td class="sku">${c.SKU}</td>
+        <td>${c.ItemName}</td>
+        <td>${c.Brand||''}</td>
+        <td>${c.Supplier||''}</td>
+        <td class="num">${fmt(c.Cost)}</td>
+        <td class="num">${fmt(c.Price)}</td>
+        <td class="num">${fmt((c.MarginPct||0)*100)}%</td>
+        <td>
+          <select class="statusSelect" data-zsku="${c.zSKU}">
+            <option ${c.Status==='Active'?'selected':''}>Active</option>
+            <option ${c.Status==='Discontinued'?'selected':''}>Discontinued</option>
+          </select>
+        </td>
+        <td>${flagChip(c.MarginFlag)}</td>
+      </tr>`).join('');
+    setPanel(`
+      <div class="panel-head"><h3>${state.catalog.length} SKU${state.catalog.length===1?'':'s'}</h3>
+        <div style="display:flex;gap:8px;">
+          ${exportBtnHtml('catalogExportBtn')}
+          ${templateBtnHtml('catalogTemplateBtn')}
+          <button class="btn" onclick="refreshAll()">Refresh</button>
+        </div></div>
+      ${state.catalog.length ? `<table>
+        <thead><tr><th>SKU</th><th>Item</th><th>Brand</th><th>Supplier</th><th>Cost</th><th>Price</th><th>Margin</th><th>Status</th><th>Flag</th></tr></thead>
+        <tbody>${rows}</tbody></table>` : emptyState('No SKUs yet — add one below.')}
+    `);
+    document.getElementById('catalogExportBtn').onclick = () => exportRows(state.catalog, 'master-catalog.xlsx', 'Master Catalog');
+    document.getElementById('catalogTemplateBtn').onclick = () => downloadTemplate(
+      ['zSKU','Barcode','SKU','Item Name','MOQ','Cost','Price','Outbound Fee','Storage Cost','Brand','Supplier'],
+      'master-catalog-template.xlsx');
+    document.querySelectorAll('.statusSelect').forEach(sel => {
+      sel.onchange = async () => {
+        const zsku = sel.dataset.zsku;
+        sel.disabled = true;
+        try{
+          await apiPost('updateCatalogStatus', { zsku, status: sel.value });
+          state.catalog = [];
+        }catch(e){ alert('Could not update status: ' + e.message); }
+        sel.disabled = false;
+      };
+    });
+
+    const addPanelHtml = `
+      <div class="panel-head"><h3>Add a new SKU</h3></div>
+      <form class="form" id="catalogForm">
+        <div class="field"><label>zSKU</label><input type="text" name="zsku" placeholder="Z00003" required></div>
+        <div class="field"><label>SKU</label><input type="text" name="sku" placeholder="SKU-003" required></div>
+        <div class="field span2"><label>Item name</label><input type="text" name="itemName" required></div>
+        <div class="field"><label>Barcode</label><input type="text" name="barcode"></div>
+        <div class="field"><label>Brand</label><input type="text" name="brand"></div>
+        <div class="field"><label>Supplier</label><input type="text" name="supplier"></div>
+        <div class="field"><label>MOQ</label><input type="number" name="moq" min="0"></div>
+        <div class="field"><label>Cost</label><input type="number" name="cost" step="0.01" min="0" required></div>
+        <div class="field"><label>Price</label><input type="number" name="price" step="0.01" min="0" required></div>
+        <div class="field"><label>Outbound fee</label><input type="number" name="outboundFee" step="0.01" min="0"></div>
+        <div class="field"><label>Storage cost (monthly)</label><input type="number" name="storageCost" step="0.01" min="0"></div>
+        <div class="form-foot"><button class="btn primary" type="submit">Add SKU</button><span class="msg" id="catalogMsg"></span></div>
+      </form>`;
+    const panelEl = document.createElement('div');
+    panelEl.className = 'panel';
+    panelEl.innerHTML = addPanelHtml;
+    document.getElementById('main').appendChild(panelEl);
+    document.getElementById('catalogForm').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const f = new FormData(ev.target);
+      const msg = document.getElementById('catalogMsg');
+      msg.className='msg'; msg.textContent='Saving…';
+      try{
+        await apiPost('addCatalogItem', Object.fromEntries(f));
+        msg.className='msg ok'; msg.textContent='Added.';
+        state.catalog = [];
+        ev.target.reset();
+        setTimeout(() => render(), 600);
+      }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+    };
+
+    const bulkPanel = document.createElement('div');
+    bulkPanel.className = 'panel';
+    bulkPanel.innerHTML = `
+      <div class="panel-head"><h3>Bulk import SKUs</h3></div>
+      <div class="importzone" id="catalogImportDrop">Click to choose a file — headers: zSKU, Barcode, SKU (any one required), Item Name, MOQ, Cost, Price, Outbound Fee, Storage Cost, Brand, Supplier
+        <input type="file" id="catalogImportFile" accept=".xlsx,.xls,.csv">
+      </div>
+      <div id="catalogImportBody"></div>`;
+    document.getElementById('main').appendChild(bulkPanel);
+    document.getElementById('catalogImportDrop').onclick = () => document.getElementById('catalogImportFile').click();
+    document.getElementById('catalogImportFile').onchange = async (ev) => {
+      const file = ev.target.files[0];
+      if(!file) return;
+      const body = document.getElementById('catalogImportBody');
+      body.innerHTML = '<div class="loading">parsing…</div>';
+      try{
+        const wb = await readFileAsWorkbook(file);
+        const parsed = sheetRows(wb);
+        if(!parsed.length) throw new Error('No rows found.');
+        const headers = Object.keys(parsed[0]);
+        const norm = (h) => h.toLowerCase().replace(/[^a-z]/g,'');
+        const findExact = (name) => headers.find(h => norm(h) === name);
+        const findContains = (needles) => headers.find(h => needles.some(n => norm(h).includes(n)));
+        const cols = {
+          zsku: findExact('zsku') || findContains(['zsku']),
+          barcode: findExact('barcode') || findContains(['barcode']),
+          sku: findExact('sku') || headers.find(h => norm(h).includes('sku') && norm(h) !== 'zsku' && !norm(h).includes('zsku')),
+          itemName: findExact('itemname') || findExact('name') || findContains(['itemname','productname']),
+          moq: findExact('moq'), cost: findExact('cost'), price: findExact('price'),
+          outboundFee: findContains(['outboundfee','outbound']), storageCost: findContains(['storagecost','storage']),
+          brand: findExact('brand'), supplier: findExact('supplier')
+        };
+        const items = parsed.map(r => ({
+          zsku: cols.zsku ? r[cols.zsku] : '', barcode: cols.barcode ? r[cols.barcode] : '',
+          sku: cols.sku ? r[cols.sku] : '', itemName: cols.itemName ? r[cols.itemName] : '',
+          moq: cols.moq ? r[cols.moq] : 0, cost: cols.cost ? r[cols.cost] : 0, price: cols.price ? r[cols.price] : 0,
+          outboundFee: cols.outboundFee ? r[cols.outboundFee] : 0, storageCost: cols.storageCost ? r[cols.storageCost] : 0,
+          brand: cols.brand ? r[cols.brand] : '', supplier: cols.supplier ? r[cols.supplier] : ''
+        }));
+        body.innerHTML = `<div class="batch-bar">
+          <span class="msg">${items.length} row(s) parsed.</span>
+          <button class="btn primary" id="catalogImportBtn">Import</button>
+          <span class="msg" id="catalogImportMsg"></span></div>`;
+        document.getElementById('catalogImportBtn').onclick = async () => {
+          const msg = document.getElementById('catalogImportMsg');
+          msg.className='msg'; msg.textContent='Saving…';
+          try{
+            const r = await apiPost('addCatalogItemsBatch', { items });
+            msg.className='msg ok';
+            msg.textContent = `Added ${r.added}, skipped ${r.skippedCount} (already existed or missing an identifier).`;
+            state.catalog = [];
+          }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+        };
+      }catch(e){ body.innerHTML = `<div class="empty" style="color:var(--red)">${e.message}</div>`; }
+    };
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, stockKey, stockLabel, mode){
+  $main.innerHTML = viewHead(title, sub) + panelShell('loading');
+  try{
+    const rows = await apiGet(action);
+    const nextNum = mode === 'ship'
+      ? await apiGet('nextSONumber').catch(() => ({number:''}))
+      : await apiGet('nextPONumber').catch(() => ({number:''}));
+    const body = rows.length ? rows.map(r => `
+      <tr data-zsku="${r.zSKU}">
+        <td><input type="checkbox" class="rowCheck" ${Number(r[qtyKey])>0?'checked':''}></td>
+        <td class="sku">${r.SKU||r.zSKU}</td>
+        <td>${r.ItemName||''}</td>
+        <td class="num">${fmt(r[stockKey])}</td>
+        <td class="num">${fmt(r.WeeksOnHand !== undefined ? r.WeeksOnHand : r.WeeksOfCover)}</td>
+        <td class="num">${fmt(r.MOQ)}</td>
+        <td class="num"><input type="number" class="rowQty" min="0" value="${Math.round(Number(r[qtyKey])||0)}" style="width:90px;text-align:right;"></td>
+      </tr>`).join('') : '';
+    const batchBar = mode === 'ship' ? `
+      <div class="batch-bar">
+        <label>SO number</label><input type="text" id="batchSO" value="${nextNum.number||''}">
+        <label>Ship date</label><input type="date" id="batchDate" value="${today()}">
+        <button class="btn primary" id="batchAddBtn">Add checked items to Sales Order</button>
+        <span class="msg" id="batchMsg"></span>
+      </div>` : `
+      <div class="batch-bar">
+        <label>PO number</label><input type="text" id="batchPO" value="${nextNum.number||''}">
+        <label>PO date</label><input type="date" id="batchDate" value="${today()}">
+        <label>Supplier</label><input type="text" id="batchSupplier" placeholder="same for this order, edit per line later">
+        <button class="btn primary" id="batchAddBtn">Add checked items to Purchase Order</button>
+        <span class="msg" id="batchMsg"></span>
+      </div>`;
+    setPanel(`
+      <div class="panel-head"><h3>${rows.length} SKU${rows.length===1?'':'s'} tracked</h3>
+        <button class="btn" onclick="refreshAll()">Refresh</button></div>
+      ${rows.length ? `<table>
+        <thead><tr><th></th><th>SKU</th><th>Item</th><th>${stockLabel}</th><th>Weeks cover</th><th>MOQ</th><th>Qty</th></tr></thead>
+        <tbody>${body}</tbody></table>${batchBar}` : emptyState('No rows yet — add zSKUs to this planner in the sheet.')}
+    `);
+    const btn = document.getElementById('batchAddBtn');
+    if(btn) btn.onclick = async () => {
+      const items = [];
+      document.querySelectorAll('tr[data-zsku]').forEach(tr => {
+        const check = tr.querySelector('.rowCheck');
+        const qty = Number(tr.querySelector('.rowQty').value || 0);
+        if(check.checked && qty > 0){
+          items.push(mode === 'ship'
+            ? { zsku: tr.dataset.zsku, qtySent: qty }
+            : { zsku: tr.dataset.zsku, qtyOrdered: qty });
+        }
+      });
+      const msg = document.getElementById('batchMsg');
+      if(!items.length){ msg.className='msg err'; msg.textContent='Check at least one item with a qty > 0.'; return; }
+      msg.className='msg'; msg.textContent='Saving…'; btn.disabled = true;
+      try{
+        if(mode === 'ship'){
+          const soNumber = document.getElementById('batchSO').value;
+          const shipDate = document.getElementById('batchDate').value;
+          const r = await apiPostBatched('addSalesOrderBatch', items, { soNumber, shipDate }, 'linesAdded',
+            (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Saving batch ${done}/${of}…`; } });
+          msg.className='msg ok'; msg.textContent = `Added ${r.total} line(s) to ${soNumber}.`;
+        }else{
+          const poNumber = document.getElementById('batchPO').value;
+          const poDate = document.getElementById('batchDate').value;
+          const supplier = document.getElementById('batchSupplier').value;
+          const r = await apiPostBatched('addPurchaseOrderBatch', items, { poNumber, poDate, supplier }, 'linesAdded',
+            (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Saving batch ${done}/${of}…`; } });
+          msg.className='msg ok'; msg.textContent = `Added ${r.total} line(s) to ${poNumber}.`;
+        }
+      }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+      btn.disabled = false;
+    };
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderShipments(){
+  $main.innerHTML = viewHead('Shipments', 'Every Sales Order sent to Noon FBN, with receiving status and whether it reconciles against the GRN report.') + panelShell('loading');
+  try{
+    const rows = await apiGet('salesOrder');
+    const chip = (status) => {
+      if(status === '\u2713 Confirmed Match') return `<span class="chip green">${status}</span>`;
+      if(status === '\u26a0 Discrepancy') return `<span class="chip red">${status}</span>`;
+      if(status) return `<span class="chip amber">${status}</span>`;
+      return '—';
+    };
+    const body = rows.length ? rows.slice().reverse().map(r => `
+      <tr>
+        <td class="sku">${r.SONumber}</td>
+        <td>${r.ShipDate||''}</td>
+        <td>${r.ExpectedSellableDate||''}</td>
+        <td class="num">${fmt(r.TotalUnitsSent)}</td>
+        <td class="num">${fmt(r.TotalUnitsReceived)}</td>
+        <td class="num">${fmt(r.TotalDamaged)}</td>
+        <td>${r.Status||''}</td>
+        <td>${chip(r.MatchStatus)}</td>
+      </tr>`).join('') : '';
+    setPanel(`
+      <div class="panel-head"><h3>${rows.length} shipment${rows.length===1?'':'s'}</h3>
+        <button class="btn" onclick="refreshAll()">Refresh</button></div>
+      ${rows.length ? `<table>
+        <thead><tr><th>SO</th><th>Ship date</th><th>Expected sellable</th><th>Sent</th><th>Received</th><th>Damaged/short</th><th>Status</th><th>Match</th></tr></thead>
+        <tbody>${body}</tbody></table>` : emptyState('No shipments logged yet — use "Log shipment (SO)".')}
+    `);
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderWeekly(){
+  $main.innerHTML = viewHead('Weekly stock update', 'Import Monday\'s file, or paste this week\'s Noon FBN saleable stock directly. Saving updates the live snapshot and appends a trend row automatically.') + panelShell('loading');
+  try{
+    const catalog = await ensureCatalog();
+    const rows = catalog.map(c => `
+      <div class="weekly-row" data-zsku="${c.zSKU}">
+        <div class="sku">${c.SKU}</div>
+        <div>${c.ItemName}</div>
+        <input type="number" min="0" class="w-saleable" placeholder="Saleable qty">
+        <input type="number" min="0" class="w-damaged" placeholder="Damaged (opt.)">
+      </div>`).join('');
+    setPanel(`
+      <div class="panel-head"><h3>Import file (optional)</h3>
+        <div style="display:flex;gap:8px;">
+          ${exportBtnHtml('weeklyExportBtn','Export current snapshot')}
+          ${templateBtnHtml('weeklyTemplateBtn')}
+        </div></div>
+      <div class="importzone" id="weeklyDrop">Click to choose Monday's stock file — columns ZSKU, QTY (saleable only)
+        <input type="file" id="weeklyFile" accept=".xlsx,.xls,.csv">
+      </div>
+      <div id="weeklyImportBody"></div>
+      <div class="panel-head"><h3>Report date</h3>
+        <input type="date" id="weekDate" value="${today()}" style="width:160px;"></div>
+      <div class="weekly-row head"><div>SKU</div><div>Item</div><div>Saleable qty</div><div>Damaged qty</div></div>
+      ${rows || emptyState('No SKUs in Master Catalog yet.')}
+      <div style="padding:14px 16px;display:flex;gap:12px;align-items:center;">
+        <button class="btn primary" id="saveWeekly">Save weekly stock</button>
+        <span class="msg" id="weeklyMsg"></span>
+      </div>
+    `);
+    document.getElementById('weeklyExportBtn').onclick = async () => {
+      const snapshot = await apiGet('noonInventory');
+      exportRows(snapshot, 'noon-fbn-stock-snapshot.xlsx', 'Noon FBN Stock');
+    };
+    document.getElementById('weeklyTemplateBtn').onclick = () => downloadTemplate(['zSKU','SKU','Barcode','QTY'], 'weekly-stock-template.xlsx');
+    document.getElementById('weeklyDrop').onclick = () => document.getElementById('weeklyFile').click();
+    document.getElementById('weeklyFile').onchange = async (ev) => {
+      const file = ev.target.files[0];
+      if(!file) return;
+      const body = document.getElementById('weeklyImportBody');
+      body.innerHTML = '<div class="loading">parsing…</div>';
+      try{
+        const wb = await readFileAsWorkbook(file);
+        const parsed = sheetRows(wb);
+        if(!parsed.length) throw new Error('No rows found in that file.');
+        const headers = Object.keys(parsed[0]);
+        const findExact = (name) => headers.find(h => h.toLowerCase().trim() === name);
+        const applyFill = (skuCol, saleCol) => {
+          let matched = 0, unmatched = 0;
+          parsed.forEach(r => {
+            const z = resolveZsku(r[skuCol], catalog);
+            if(!z){ unmatched++; return; }
+            const rowEl = document.querySelector(`.weekly-row[data-zsku="${z}"]`);
+            if(!rowEl) return;
+            rowEl.querySelector('.w-saleable').value = Number(r[saleCol]||0);
+            matched++;
+          });
+          return { matched, unmatched };
+        };
+
+        // Known format: an identifier column (zSKU, SKU, or Barcode — any one) plus QTY.
+        const zskuCol = findExact('zsku') || findExact('sku') || findExact('barcode');
+        const qtyCol = findExact('qty');
+        if(zskuCol && qtyCol){
+          const { matched, unmatched } = applyFill(zskuCol, qtyCol);
+          body.innerHTML = `<div class="empty" style="color:${unmatched?'var(--amber)':'var(--green)'};text-align:left;padding:10px 16px;">
+            Recognized ${zskuCol}/${qtyCol} format — filled ${matched} row(s)${unmatched ? `, ${unmatched} unmatched skipped` : ''}. Review below, then Save.</div>`;
+          return;
+        }
+
+        // Fallback: unrecognized headers, let the user map columns manually.
+        const guess = (needles) => headers.find(h => needles.some(n => h.toLowerCase().includes(n))) || headers[0];
+        const opts = headers.map(h => `<option value="${h}">${h}</option>`).join('');
+        body.innerHTML = `
+          <div class="batch-bar">
+            <label>SKU column</label><select class="mapSelect" id="mapSku">${opts}</select>
+            <label>Saleable qty column</label><select class="mapSelect" id="mapSaleable">${opts}</select>
+            <button class="btn primary" id="applyMapping">Apply to table below</button>
+            <span class="msg" id="weeklyMapMsg"></span>
+          </div>`;
+        document.getElementById('mapSku').value = guess(['sku','barcode']);
+        document.getElementById('mapSaleable').value = guess(['saleable','available','stock','qty']);
+        document.getElementById('applyMapping').onclick = () => {
+          const { matched, unmatched } = applyFill(
+            document.getElementById('mapSku').value, document.getElementById('mapSaleable').value);
+          const msg = document.getElementById('weeklyMapMsg');
+          msg.className = unmatched ? 'msg err' : 'msg ok';
+          msg.textContent = `Filled ${matched} row(s)` + (unmatched ? `, ${unmatched} unmatched.` : '.') + ' Review below, then Save.';
+        };
+      }catch(e){
+        body.innerHTML = `<div class="empty" style="color:var(--red)">${e.message}</div>`;
+      }
+    };
+    document.getElementById('saveWeekly').onclick = async () => {
+      const date = document.getElementById('weekDate').value;
+      const items = [];
+      document.querySelectorAll('.weekly-row[data-zsku]').forEach(row => {
+        const sale = row.querySelector('.w-saleable').value;
+        if(sale === '') return;
+        items.push({
+          zsku: row.dataset.zsku, reportDate: date,
+          saleableQty: Number(sale), damagedQty: Number(row.querySelector('.w-damaged').value || 0)
+        });
+      });
+      const msg = document.getElementById('weeklyMsg');
+      if(!items.length){ msg.className='msg err'; msg.textContent='Enter at least one saleable qty.'; return; }
+      msg.className='msg'; msg.textContent='Saving…';
+      try{
+        const r = await apiPostBatched('updateNoonWeekly', items, {}, 'updated',
+          (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Saving batch ${done}/${of}…`; } });
+        msg.className='msg ok'; msg.textContent = `Saved ${r.total} SKU(s).`;
+      }
+      catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+    };
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderSalesOrders(){
+  $main.innerHTML = viewHead('Sales Orders', 'Shipments sent to Noon FBN. Click one to view or add its items.') + panelShell('loading');
+  try{
+    const rows = await apiGet('salesOrder');
+    const nextNum = await apiGet('nextSONumber').catch(() => ({number:''}));
+    const chip = (status) => {
+      if(status === '\u2713 Confirmed Match') return `<span class="chip green">${status}</span>`;
+      if(status === '\u26a0 Discrepancy') return `<span class="chip red">${status}</span>`;
+      if(status) return `<span class="chip amber">${status}</span>`;
+      return '—';
+    };
+    const body = rows.length ? rows.slice().reverse().map(r => `
+      <tr class="clickRow" data-so="${r.SONumber}">
+        <td class="sku">${r.SONumber}</td>
+        <td>${r.ShipDate||''}</td>
+        <td class="num">${fmt(r.TotalUnitsSent)}</td>
+        <td class="num">${fmt(r.TotalUnitsReceived)}</td>
+        <td>${r.Status||''}</td>
+        <td>${chip(r.MatchStatus)}</td>
+      </tr>`).join('') : '';
+    setPanel(`
+      <div class="panel-head"><h3>Create a new Sales Order</h3></div>
+      <form class="form" id="newSOForm">
+        <div class="field"><label>SO number</label><input type="text" name="soNumber" value="${nextNum.number||''}" required></div>
+        <div class="field"><label>Ship date</label><input type="date" name="shipDate" value="${today()}" required></div>
+        <div class="form-foot"><button class="btn primary" type="submit">Create & open</button><span class="msg" id="newSOMsg"></span></div>
+      </form>`);
+    const listPanel = document.createElement('div');
+    listPanel.className = 'panel';
+    listPanel.innerHTML = `
+      <div class="panel-head"><h3>${rows.length} order${rows.length===1?'':'s'}</h3>
+        <button class="btn" onclick="refreshAll()">Refresh</button></div>
+      ${rows.length ? `<table>
+        <thead><tr><th>SO</th><th>Ship date</th><th>Sent</th><th>Received</th><th>Status</th><th>Match</th></tr></thead>
+        <tbody>${body}</tbody></table>` : emptyState('No sales orders yet — create one above.')}`;
+    document.getElementById('main').appendChild(listPanel);
+
+    document.querySelectorAll('tr.clickRow[data-so]').forEach(tr => {
+      tr.style.cursor = 'pointer';
+      tr.onclick = () => { state.selectedSO = tr.dataset.so; renderSalesOrderDetail(); };
+    });
+    document.getElementById('newSOForm').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const f = Object.fromEntries(new FormData(ev.target));
+      const msg = document.getElementById('newSOMsg');
+      msg.className='msg'; msg.textContent='Creating…';
+      try{
+        await apiPost('createSalesOrder', f);
+        state.selectedSO = f.soNumber;
+        renderSalesOrderDetail();
+      }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+    };
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderSalesOrderDetail(){
+  const soNumber = state.selectedSO;
+  $main.innerHTML = `<div class="view-head"><a href="#" id="backToSO" style="color:var(--blue);font-size:12.5px;text-decoration:none;">← All Sales Orders</a>
+    <h2 class="view-title" style="margin-top:8px;">${soNumber}</h2></div>` + panelShell('loading');
+  document.getElementById('backToSO').onclick = (e) => { e.preventDefault(); state.selectedSO = null; renderSalesOrders(); };
+  try{
+    const catalog = await ensureCatalog();
+    const [orders, lines] = await Promise.all([apiGet('salesOrder'), apiGet('salesOrderLine')]);
+    const header = orders.find(o => o.SONumber === soNumber);
+    const myLines = lines.filter(l => l.SONumber === soNumber);
+    const isCancelled = header && header.Cancelled === 'Yes';
+    const lineChip = (s) => s === 'Matched' ? `<span class="chip green">Matched</span>` :
+      s === 'Mismatch' ? `<span class="chip red">Mismatch</span>` : s ? `<span class="chip amber">${s}</span>` : '—';
+    const rowsHtml = myLines.map(l => `
+      <tr><td class="sku">${l.SKU}</td><td>${l.ItemName}</td>
+        <td class="num">${fmt(l.QtySent)}</td>
+        <td class="num">${l.ConfirmedQty!==''&&l.ConfirmedQty!==undefined?fmt(l.ConfirmedQty):'—'}</td>
+        <td class="num" style="font-weight:600;">${fmt(l.EffectiveQty)}</td>
+        <td class="num">${fmt(l.QtyReceived)}</td>
+        <td class="num">${fmt(l.QtyDamaged)}</td><td class="num">${fmt(l.Discrepancy)}</td>
+        <td>${lineChip(l.LineStatus)}</td>
+        <td style="font-size:11.5px;color:var(--text-dim);">${l.ShortageReason||''}</td></tr>`).join('');
+    const options = catalog.map(c => `<option value="${c.zSKU}">${c.SKU} — ${c.ItemName}</option>`).join('');
+
+    setPanel(`
+      <div class="panel-head"><h3>Order summary</h3>
+        ${isCancelled ? `<span class="chip red">Cancelled</span>` :
+          `<button class="btn" id="cancelSOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>`}</div>
+      <div class="batch-bar"><label>Ship date</label><span>${header?header.ShipDate:''}</span>
+        <label>Status</label><span>${header?header.Status:''}</span>
+        <label>Expected sellable</label><span>${header?header.ExpectedSellableDate:''}</span></div>
+    `);
+    const cancelBtn = document.getElementById('cancelSOBtn');
+    if(cancelBtn) cancelBtn.onclick = async () => {
+      if(!confirm(`Cancel ${soNumber}? All its stock will return to Internal WH automatically.`)) return;
+      try{ await apiPost('cancelSalesOrder', { soNumber }); renderSalesOrderDetail(); }
+      catch(e){ alert('Could not cancel: ' + e.message); }
+    };
+
+    const linesPanel = document.createElement('div');
+    linesPanel.className = 'panel';
+    linesPanel.innerHTML = `
+      <div class="panel-head"><h3>${myLines.length} line item(s)</h3>
+        ${myLines.length ? exportBtnHtml('soExportBtn','Export lines') : ''}</div>
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item</th><th>Planned</th><th>Confirmed</th><th>Effective</th><th>Received</th><th>Damaged</th><th>Discrepancy</th><th>Status</th><th>Shortage reason</th></tr></thead>
+        <tbody>${rowsHtml}</tbody></table>` : emptyState('No items yet — add one below or import a file.')}`;
+    document.getElementById('main').appendChild(linesPanel);
+    const soExportBtn = document.getElementById('soExportBtn');
+    if(soExportBtn) soExportBtn.onclick = () => exportRows(myLines, `${soNumber}-lines.xlsx`, soNumber);
+
+    if(isCancelled){ return; } // no further edits on a cancelled order
+
+    const addPanel = document.createElement('div');
+    addPanel.className = 'panel';
+    addPanel.innerHTML = `
+      <div class="panel-head"><h3>Add an item manually</h3></div>
+      <form class="form" id="soLineForm">
+        <div class="field span2"><label>SKU</label><select name="zsku" required>${options}</select></div>
+        <div class="field"><label>Qty sent</label><input type="number" name="qtySent" min="1" required></div>
+        <div class="form-foot"><button class="btn primary" type="submit">Add item</button><span class="msg" id="soLineMsg"></span></div>
+      </form>
+      <div class="panel-head"><h3>Or import items</h3>${templateBtnHtml('soTemplateBtn')}</div>
+      <div class="importzone" id="soImportDrop">Click to choose a file — columns ZSKU, QTY
+        <input type="file" id="soImportFile" accept=".xlsx,.xls,.csv">
+      </div>
+      <div id="soImportBody"></div>`;
+    document.getElementById('main').appendChild(addPanel);
+    document.getElementById('soTemplateBtn').onclick = () => downloadTemplate(['zSKU','SKU','Barcode','QTY'], `${soNumber}-import-template.xlsx`);
+
+    document.getElementById('soLineForm').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const f = new FormData(ev.target);
+      const msg = document.getElementById('soLineMsg');
+      msg.className='msg'; msg.textContent='Saving…';
+      try{
+        await apiPost('addSalesOrderLine', { soNumber, shipDate: header?header.ShipDate:today(), zsku: f.get('zsku'), qtySent: f.get('qtySent') });
+        renderSalesOrderDetail();
+      }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+    };
+    document.getElementById('soImportDrop').onclick = () => document.getElementById('soImportFile').click();
+    document.getElementById('soImportFile').onchange = async (ev) => {
+      const file = ev.target.files[0];
+      if(!file) return;
+      const body = document.getElementById('soImportBody');
+      body.innerHTML = '<div class="loading">parsing…</div>';
+      try{
+        const wb = await readFileAsWorkbook(file);
+        const parsed = sheetRows(wb);
+        if(!parsed.length) throw new Error('No rows found.');
+        const headers = Object.keys(parsed[0]);
+        const findExact = (name) => headers.find(h => h.toLowerCase().trim() === name);
+        const zskuCol = findExact('zsku') || headers.find(h => h.toLowerCase().includes('sku'));
+        const qtyCol = findExact('qty') || headers.find(h => h.toLowerCase().includes('qty'));
+        const items = [];
+        let unmatched = 0;
+        parsed.forEach(r => {
+          const z = resolveZsku(r[zskuCol], catalog);
+          if(!z){ unmatched++; return; }
+          items.push({ zsku: z, qtySent: Number(r[qtyCol]||0) });
+        });
+        body.innerHTML = `<div class="batch-bar">
+          <span class="msg">${items.length} row(s) recognized${unmatched?`, ${unmatched} unmatched`:''}.</span>
+          <button class="btn primary" id="soImportBtn">Import</button>
+          <span class="msg" id="soImportMsg"></span></div>`;
+        document.getElementById('soImportBtn').onclick = async () => {
+          const msg = document.getElementById('soImportMsg');
+          msg.className='msg'; msg.textContent='Saving…';
+          try{
+            const r = await apiPostBatched('addSalesOrderBatch', items,
+              { soNumber, shipDate: header?header.ShipDate:today() }, 'linesAdded',
+              (done,of) => { if(of>1){ msg.textContent = `Saving batch ${done}/${of}…`; } });
+            renderSalesOrderDetail();
+          }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+        };
+      }catch(e){ body.innerHTML = `<div class="empty" style="color:var(--red)">${e.message}</div>`; }
+    };
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderPurchaseOrders(){
+  $main.innerHTML = viewHead('Purchase Orders', 'Orders placed with your suppliers to restock Internal WH. Click one to view or add its items.') + panelShell('loading');
+  try{
+    const rows = await apiGet('purchaseOrder');
+    const nextNum = await apiGet('nextPONumber').catch(() => ({number:''}));
+    const body = rows.length ? rows.slice().reverse().map(r => `
+      <tr class="clickRow" data-po="${r.PONumber}">
+        <td class="sku">${r.PONumber}</td><td>${r.PODate||''}</td><td>${r.Supplier||''}</td>
+        <td class="num">${fmt(r.TotalUnits)}</td><td class="num">${fmt(r.TotalCost)}</td><td>${r.Status||''}</td>
+      </tr>`).join('') : '';
+    setPanel(`
+      <div class="panel-head"><h3>Create a new Purchase Order</h3></div>
+      <form class="form" id="newPOForm">
+        <div class="field"><label>PO number</label><input type="text" name="poNumber" value="${nextNum.number||''}" required></div>
+        <div class="field"><label>PO date</label><input type="date" name="poDate" value="${today()}" required></div>
+        <div class="field"><label>Supplier</label><input type="text" name="supplier"></div>
+        <div class="field"><label>Expected delivery</label><input type="date" name="expectedDelivery"></div>
+        <div class="form-foot"><button class="btn primary" type="submit">Create & open</button><span class="msg" id="newPOMsg"></span></div>
+      </form>`);
+    const listPanel = document.createElement('div');
+    listPanel.className = 'panel';
+    listPanel.innerHTML = `
+      <div class="panel-head"><h3>${rows.length} order${rows.length===1?'':'s'}</h3>
+        <button class="btn" onclick="refreshAll()">Refresh</button></div>
+      ${rows.length ? `<table>
+        <thead><tr><th>PO</th><th>Date</th><th>Supplier</th><th>Units</th><th>Cost</th><th>Status</th></tr></thead>
+        <tbody>${body}</tbody></table>` : emptyState('No purchase orders yet — create one above.')}`;
+    document.getElementById('main').appendChild(listPanel);
+
+    document.querySelectorAll('tr.clickRow[data-po]').forEach(tr => {
+      tr.style.cursor = 'pointer';
+      tr.onclick = () => { state.selectedPO = tr.dataset.po; renderPurchaseOrderDetail(); };
+    });
+    document.getElementById('newPOForm').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const f = Object.fromEntries(new FormData(ev.target));
+      const msg = document.getElementById('newPOMsg');
+      msg.className='msg'; msg.textContent='Creating…';
+      try{
+        await apiPost('createPurchaseOrder', f);
+        state.selectedPO = f.poNumber;
+        renderPurchaseOrderDetail();
+      }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+    };
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderPurchaseOrderDetail(){
+  const poNumber = state.selectedPO;
+  $main.innerHTML = `<div class="view-head"><a href="#" id="backToPO" style="color:var(--blue);font-size:12.5px;text-decoration:none;">← All Purchase Orders</a>
+    <h2 class="view-title" style="margin-top:8px;">${poNumber}</h2></div>` + panelShell('loading');
+  document.getElementById('backToPO').onclick = (e) => { e.preventDefault(); state.selectedPO = null; renderPurchaseOrders(); };
+  try{
+    const catalog = await ensureCatalog();
+    const [orders, lines] = await Promise.all([apiGet('purchaseOrder'), apiGet('purchaseOrderLine')]);
+    const header = orders.find(o => o.PONumber === poNumber);
+    const myLines = lines.filter(l => l.PONumber === poNumber);
+    const isCancelled = header && header.Status === 'Cancelled';
+    const rowsHtml = myLines.map((l,i) => `
+      <tr data-linenum="${l.LineNum}">
+        <td class="sku">${l.SKU}</td><td class="num">${fmt(l.QtyOrdered)}</td>
+        <td class="num">${fmt(l.UnitCost)}</td><td class="num">${fmt(l.LineTotal)}</td>
+        <td class="num"><input type="number" class="confirmQtyInput" min="0" value="${l.ConfirmedQty!==''&&l.ConfirmedQty!==undefined?l.ConfirmedQty:l.QtyOrdered}" style="width:80px;text-align:right;" ${isCancelled?'disabled':''}></td>
+        <td class="num">${fmt(l.QtyReceived)}</td></tr>`).join('');
+    const options = catalog.map(c => `<option value="${c.zSKU}">${c.SKU} — ${c.ItemName}</option>`).join('');
+
+    setPanel(`
+      <div class="panel-head"><h3>Order summary</h3>
+        ${isCancelled ? `<span class="chip red">Cancelled</span>` :
+          `<button class="btn" id="cancelPOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>`}</div>
+      <div class="batch-bar"><label>Date</label><span>${header?header.PODate:''}</span>
+        <label>Supplier</label><span>${header?header.Supplier:''}</span>
+        <label>Status</label><span>${header?header.Status:''}</span></div>
+    `);
+    const cancelBtn = document.getElementById('cancelPOBtn');
+    if(cancelBtn) cancelBtn.onclick = async () => {
+      if(!confirm(`Cancel ${poNumber}?`)) return;
+      try{ await apiPost('cancelPurchaseOrder', { poNumber }); renderPurchaseOrderDetail(); }
+      catch(e){ alert(e.message); } // server blocks this if anything's already been received
+    };
+
+    const linesPanel = document.createElement('div');
+    linesPanel.className = 'panel';
+    linesPanel.innerHTML = `
+      <div class="panel-head"><h3>${myLines.length} line item(s)</h3>
+        <div style="display:flex;gap:8px;">
+          ${myLines.length ? exportBtnHtml('poExportBtn','Export lines') : ''}
+          ${myLines.length && !isCancelled ? `<button class="btn" id="saveConfirmedBtn">Save confirmed qty</button>` : ''}
+        </div></div>
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Qty ordered</th><th>Unit cost</th><th>Line total</th><th>Confirmed qty</th><th>Qty received</th></tr></thead>
+        <tbody>${rowsHtml}</tbody></table>
+        <div class="empty" style="text-align:left;padding:10px 16px;">Confirmed qty defaults to Qty Ordered — edit once your supplier commits to a different amount, then Save. Qty Received is filled in from the Warehouse module's Receipt screen.</div>`
+        : emptyState('No items yet — add one below or import a file.')}`;
+    document.getElementById('main').appendChild(linesPanel);
+    const poExportBtn = document.getElementById('poExportBtn');
+    if(poExportBtn) poExportBtn.onclick = () => exportRows(myLines, `${poNumber}-lines.xlsx`, poNumber);
+    const saveBtn = document.getElementById('saveConfirmedBtn');
+    if(saveBtn) saveBtn.onclick = async () => {
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+      try{
+        const rows = document.querySelectorAll('tr[data-linenum]');
+        for(const tr of rows){
+          const lineNum = tr.dataset.linenum;
+          const val = tr.querySelector('.confirmQtyInput').value;
+          await apiPost('updatePOConfirmation', { poNumber, lineNum, confirmedQty: val });
+        }
+        renderPurchaseOrderDetail();
+      }catch(e){ alert('Could not save: ' + e.message); saveBtn.disabled = false; saveBtn.textContent = 'Save confirmed qty'; }
+    };
+
+    if(isCancelled){ return; }
+
+    const addPanel = document.createElement('div');
+    addPanel.className = 'panel';
+    addPanel.innerHTML = `
+      <div class="panel-head"><h3>Add an item manually</h3></div>
+      <form class="form" id="poLineForm">
+        <div class="field span2"><label>SKU</label><select name="zsku" required>${options}</select></div>
+        <div class="field"><label>Qty ordered</label><input type="number" name="qtyOrdered" min="1" required></div>
+        <div class="form-foot"><button class="btn primary" type="submit">Add item</button><span class="msg" id="poLineMsg"></span></div>
+      </form>
+      <div class="panel-head"><h3>Or import items</h3>${templateBtnHtml('poTemplateBtn')}</div>
+      <div class="importzone" id="poImportDrop">Click to choose a file — columns ZSKU, QTY
+        <input type="file" id="poImportFile" accept=".xlsx,.xls,.csv">
+      </div>
+      <div id="poImportBody"></div>`;
+    document.getElementById('main').appendChild(addPanel);
+    document.getElementById('poTemplateBtn').onclick = () => downloadTemplate(['zSKU','SKU','Barcode','QTY'], `${poNumber}-import-template.xlsx`);
+
+    document.getElementById('poLineForm').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const f = new FormData(ev.target);
+      const msg = document.getElementById('poLineMsg');
+      msg.className='msg'; msg.textContent='Saving…';
+      try{
+        await apiPost('addPurchaseOrderBatch', {
+          poNumber, poDate: header?header.PODate:today(), supplier: header?header.Supplier:'',
+          items: [{ zsku: f.get('zsku'), qtyOrdered: f.get('qtyOrdered') }]
+        });
+        renderPurchaseOrderDetail();
+      }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+    };
+    document.getElementById('poImportDrop').onclick = () => document.getElementById('poImportFile').click();
+    document.getElementById('poImportFile').onchange = async (ev) => {
+      const file = ev.target.files[0];
+      if(!file) return;
+      const body = document.getElementById('poImportBody');
+      body.innerHTML = '<div class="loading">parsing…</div>';
+      try{
+        const wb = await readFileAsWorkbook(file);
+        const parsed = sheetRows(wb);
+        if(!parsed.length) throw new Error('No rows found.');
+        const headers = Object.keys(parsed[0]);
+        const findExact = (name) => headers.find(h => h.toLowerCase().trim() === name);
+        const zskuCol = findExact('zsku') || headers.find(h => h.toLowerCase().includes('sku'));
+        const qtyCol = findExact('qty') || headers.find(h => h.toLowerCase().includes('qty'));
+        const items = [];
+        let unmatched = 0;
+        parsed.forEach(r => {
+          const z = resolveZsku(r[zskuCol], catalog);
+          if(!z){ unmatched++; return; }
+          items.push({ zsku: z, qtyOrdered: Number(r[qtyCol]||0) });
+        });
+        body.innerHTML = `<div class="batch-bar">
+          <span class="msg">${items.length} row(s) recognized${unmatched?`, ${unmatched} unmatched`:''}.</span>
+          <button class="btn primary" id="poImportBtn">Import</button>
+          <span class="msg" id="poImportMsg"></span></div>`;
+        document.getElementById('poImportBtn').onclick = async () => {
+          const msg = document.getElementById('poImportMsg');
+          msg.className='msg'; msg.textContent='Saving…';
+          try{
+            const r = await apiPostBatched('addPurchaseOrderBatch', items,
+              { poNumber, poDate: header?header.PODate:today(), supplier: header?header.Supplier:'' }, 'linesAdded',
+              (done,of) => { if(of>1){ msg.textContent = `Saving batch ${done}/${of}…`; } });
+            renderPurchaseOrderDetail();
+          }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+        };
+      }catch(e){ body.innerHTML = `<div class="empty" style="color:var(--red)">${e.message}</div>`; }
+    };
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderGRN(){
+  $main.innerHTML = viewHead('Log a GRN', 'Noon\'s confirmation of what they actually received against a Sales Order. Rolls up into that SO automatically.') + panelShell('loading');
+  try{
+    const [catalog, orders] = await Promise.all([ensureCatalog(), ensureSalesOrders()]);
+    const skuOptions = catalog.map(c => `<option value="${c.zSKU}">${c.SKU} — ${c.ItemName}</option>`).join('');
+    const soOptions = orders.map(o => `<option value="${o.SONumber}">${o.SONumber} — ${o.Status||'Shipped'}</option>`).join('');
+    setPanel(`
+      <div class="panel-head"><h3>Import Noon's GRN report</h3>
+        ${exportBtnHtml('grnExportBtn','Export GRN log')}</div>
+      <div class="importzone" id="grnDrop">Click to choose the .xlsx GRN report Noon gives you (Summary / GRN_Details / QC_Fail_Details tabs)
+        <input type="file" id="grnFile" accept=".xlsx,.xls">
+      </div>
+      <div id="grnImportBody"></div>
+    `);
+    document.getElementById('grnExportBtn').onclick = async () => {
+      const log = await apiGet('grnLog');
+      exportRows(log, 'grn-log.xlsx', 'GRN Log');
+    };
+    document.getElementById('grnDrop').onclick = () => document.getElementById('grnFile').click();
+    document.getElementById('grnFile').onchange = async (ev) => {
+      const file = ev.target.files[0];
+      if(!file) return;
+      const body = document.getElementById('grnImportBody');
+      body.innerHTML = '<div class="loading">parsing…</div>';
+      try{
+        const wb = await readFileAsWorkbook(file);
+        const summary = sheetRows(wb, 'Summary');
+        const details = sheetRows(wb, 'GRN_Details');
+        const qcFail = sheetRows(wb, 'QC_Fail_Details');
+        if(!details.length) throw new Error('No "GRN_Details" tab found — is this the right file?');
+
+        const asn = (summary[0] && summary[0]['ASN Number']) || (details[0] && details[0]['ASN Number']) || '';
+        const grnDateRaw = details[0] && details[0]['GRN Date'];
+        const grnDate = grnDateRaw ? new Date(grnDateRaw).toISOString().slice(0,10) : today();
+
+        const sums = {}; // zsku -> {received, damaged}
+        let unmatchedReceived = 0, unmatchedDamaged = 0;
+        details.forEach(row => {
+          const raw = row['SKU'];
+          const qty = Number(row['GRN Quantity']||0);
+          const z = resolveZsku(raw, catalog);
+          if(!z){ unmatchedReceived += qty; return; }
+          sums[z] = sums[z] || {received:0, damaged:0};
+          sums[z].received += qty;
+        });
+        qcFail.forEach(row => {
+          const raw = row['SKU'];
+          const qty = Number(row['GRN Quantity']||0);
+          const z = resolveZsku(raw, catalog);
+          if(!z){ unmatchedDamaged += qty; return; }
+          sums[z] = sums[z] || {received:0, damaged:0};
+          sums[z].damaged += qty;
+        });
+
+        const zskus = Object.keys(sums);
+        const rowsHtml = zskus.map(z => `
+          <tr><td class="sku">${catalogLabel(z, catalog)}</td>
+            <td class="num">${sums[z].received}</td><td class="num">${sums[z].damaged}</td></tr>`).join('');
+        const warn = (unmatchedReceived + unmatchedDamaged) > 0
+          ? `<div class="empty" style="color:var(--amber);text-align:left;padding:10px 16px;">
+               ${unmatchedReceived + unmatchedDamaged} unit(s) in this file couldn't be matched to a zSKU in your Master Catalog (often "UNIDENTIFIED" scans) — they're excluded from this import.</div>` : '';
+
+        body.innerHTML = `
+          <div class="batch-bar">
+            <label>SO number</label><input type="text" id="grnImportSO" value="${asn}">
+            <label>GRN number</label><input type="text" id="grnImportNum" value="GRN-${asn}">
+            <label>GRN date</label><input type="date" id="grnImportDate" value="${grnDate}">
+          </div>
+          ${warn}
+          <table><thead><tr><th>SKU</th><th>Qty received</th><th>Qty damaged/short</th></tr></thead>
+            <tbody>${rowsHtml}</tbody></table>
+          <div class="batch-bar">
+            <button class="btn primary" id="grnImportBtn">Import ${zskus.length} SKU row(s)</button>
+            <span class="msg" id="grnImportMsg"></span>
+          </div>`;
+        document.getElementById('grnImportBtn').onclick = async () => {
+          const soNumber = document.getElementById('grnImportSO').value;
+          const grnNumber = document.getElementById('grnImportNum').value;
+          const gDate = document.getElementById('grnImportDate').value;
+          const msg = document.getElementById('grnImportMsg');
+          msg.className='msg'; msg.textContent='Saving…';
+          try{
+            const items = zskus.map(z => ({
+              grnDate: gDate, grnNumber, soNumber, zsku: z,
+              qtyReceived: sums[z].received, qtyDamaged: sums[z].damaged
+            }));
+            const r = await apiPostBatched('addGRNBatch', items, {}, 'added',
+              (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Saving batch ${done}/${of}…`; } });
+            msg.className='msg ok'; msg.textContent = `Imported ${r.total} row(s).`;
+          }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+        };
+      }catch(e){
+        body.innerHTML = `<div class="empty" style="color:var(--red)">${e.message}</div>`;
+      }
+    };
+
+    const manual = document.createElement('div');
+    manual.className = 'panel';
+    manual.innerHTML = `
+      <div class="panel-head"><h3>Or log one manually</h3></div>
+      <form class="form" id="grnForm">
+        <div class="field"><label>GRN date</label><input type="date" name="grnDate" value="${today()}" required></div>
+        <div class="field"><label>GRN number</label><input type="text" name="grnNumber" placeholder="GRN-5003" required></div>
+        <div class="field span2"><label>SO number</label>
+          <select name="soNumber" required>${soOptions || '<option value="">No sales orders yet</option>'}</select></div>
+        <div class="field span2"><label>SKU</label><select name="zsku" required>${skuOptions}</select></div>
+        <div class="field"><label>Qty received</label><input type="number" name="qtyReceived" min="0" required></div>
+        <div class="field"><label>Qty damaged/short</label><input type="number" name="qtyDamaged" min="0"></div>
+        <div class="field span2"><label>Notes</label><input type="text" name="notes" placeholder="optional"></div>
+        <div class="form-foot"><button class="btn primary" type="submit">Log GRN</button><span class="msg" id="grnMsg"></span></div>
+      </form>`;
+    document.getElementById('main').appendChild(manual);
+    document.getElementById('grnForm').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const f = new FormData(ev.target);
+      const msg = document.getElementById('grnMsg');
+      msg.className='msg'; msg.textContent='Saving…';
+      try{
+        await apiPost('addGRN', Object.fromEntries(f));
+        msg.className='msg ok'; msg.textContent='GRN logged.';
+        ev.target.reset();
+      }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+    };
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderSalesFunnel(){
+  $main.innerHTML = viewHead('Monthly Sales & Insights', 'Import Noon\'s Vantage sales funnel export. Aggregated per SKU, with the same insight logic as the sheet.') + panelShell('loading');
+  try{
+    const catalog = await ensureCatalog();
+    setPanel(`
+      <div class="panel-head"><h3>Import sales funnel report</h3>
+        ${exportBtnHtml('funnelExportBtn','Export funnel log')}</div>
+      <div class="importzone" id="funnelDrop">Click to choose the Vantage sales funnel export (.csv or .xlsx)
+        <input type="file" id="funnelFile" accept=".csv,.xlsx,.xls">
+      </div>
+      <div id="funnelImportBody"></div>
+    `);
+    document.getElementById('funnelExportBtn').onclick = async () => {
+      const log = await apiGet('salesFunnelLog');
+      exportRows(log, 'sales-funnel-log.xlsx', 'Sales Funnel');
+    };
+    document.getElementById('funnelDrop').onclick = () => document.getElementById('funnelFile').click();
+    document.getElementById('funnelFile').onchange = async (ev) => {
+      const file = ev.target.files[0];
+      if(!file) return;
+      const body = document.getElementById('funnelImportBody');
+      body.innerHTML = '<div class="loading">parsing…</div>';
+      try{
+        const wb = await readFileAsWorkbook(file);
+        const rows = sheetRows(wb).filter(r => !isNaN(Number(r['Impressions'])) && r['SKU']);
+        if(!rows.length) throw new Error('No usable rows found — expected columns like SKU, Impressions, GVS, ATCs, GMV, Units.');
+
+        // period = most common year-month in Event date
+        const monthCounts = {};
+        rows.forEach(r => {
+          const d = String(r['Event date']||'').slice(0,7);
+          if(d) monthCounts[d] = (monthCounts[d]||0) + 1;
+        });
+        const period = Object.keys(monthCounts).sort((a,b) => monthCounts[b]-monthCounts[a])[0] || today().slice(0,7);
+
+        const sums = {}; // zsku -> {impressions,gvs,atcs,units,gmv}
+        let unmatched = 0;
+        rows.forEach(r => {
+          const z = resolveZsku(r['SKU'], catalog);
+          if(!z){ unmatched++; return; }
+          sums[z] = sums[z] || {impressions:0,gvs:0,atcs:0,units:0,gmv:0};
+          sums[z].impressions += Number(r['Impressions']||0);
+          sums[z].gvs += Number(r['GVS']||r['GVs']||0);
+          sums[z].atcs += Number(r['ATCs']||0);
+          sums[z].units += Number(r['Units']||0);
+          sums[z].gmv += Number(r['GMV']||0);
+        });
+
+        const T = { impressions:1000, ctr:0.02, atccr:0.05, cartcr:0.40 };
+        const insight = (s) => {
+          const ctr = s.impressions ? s.gvs/s.impressions : 0;
+          const atccr = s.gvs ? s.atcs/s.gvs : 0;
+          const cartcr = s.atcs ? s.units/s.atcs : 0;
+          const flags = [];
+          if(s.impressions < T.impressions) flags.push('Low impressions: boost ads/keywords');
+          if(ctr < T.ctr) flags.push('Low CTR: improve image/price/title');
+          if(atccr < T.atccr) flags.push('Low ATC rate: improve price/reviews/content');
+          if(cartcr < T.cartcr) flags.push('Low cart conversion: review price/shipping/stock');
+          return flags.length ? flags.join(' | ') : 'Healthy funnel';
+        };
+
+        const zskus = Object.keys(sums);
+        const rowsHtml = zskus.map(z => {
+          const s = sums[z];
+          const healthy = insight(s) === 'Healthy funnel';
+          return `<tr><td class="sku">${catalogLabel(z, catalog)}</td>
+            <td class="num">${s.impressions}</td><td class="num">${s.gvs}</td><td class="num">${s.atcs}</td><td class="num">${s.units}</td>
+            <td>${healthy ? `<span class="chip green">Healthy</span>` : `<span class="chip amber">Flagged</span>`}</td>
+            <td style="white-space:normal;max-width:320px;font-size:12px;color:var(--text-dim);">${insight(s)}</td></tr>`;
+        }).join('');
+        const warn = unmatched > 0 ? `<div class="empty" style="color:var(--amber);text-align:left;padding:10px 16px;">
+          ${unmatched} row(s) had a SKU not found in your Master Catalog — excluded from this import.</div>` : '';
+
+        body.innerHTML = `
+          <div class="batch-bar"><label>Period</label><input type="text" id="funnelPeriod" value="${period}" style="width:100px;"></div>
+          ${warn}
+          <table><thead><tr><th>SKU</th><th>Impressions</th><th>GVs</th><th>ATCs</th><th>Units</th><th>Status</th><th>Insight</th></tr></thead>
+            <tbody>${rowsHtml}</tbody></table>
+          <div class="batch-bar">
+            <button class="btn primary" id="funnelImportBtn">Import ${zskus.length} SKU row(s)</button>
+            <span class="msg" id="funnelImportMsg"></span>
+          </div>`;
+        document.getElementById('funnelImportBtn').onclick = async () => {
+          const per = document.getElementById('funnelPeriod').value;
+          const msg = document.getElementById('funnelImportMsg');
+          msg.className='msg'; msg.textContent='Saving…';
+          try{
+            const items = zskus.map(z => ({ period: per, zsku: z, ...sums[z] }));
+            const r = await apiPostBatched('addSalesFunnelBatch', items, {}, 'added',
+              (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Saving batch ${done}/${of}…`; } });
+            msg.className='msg ok'; msg.textContent = `Imported ${r.total} row(s).`;
+          }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+        };
+      }catch(e){
+        body.innerHTML = `<div class="empty" style="color:var(--red)">${e.message}</div>`;
+      }
+    };
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderAdjust(){
+  $main.innerHTML = viewHead('Log an adjustment', 'Damage, returns, and manual corrections to Internal WH stock. Flows straight into On Hand Qty.') + panelShell('loading');
+  try{
+    const catalog = await ensureCatalog();
+    const options = catalog.map(c => `<option value="${c.zSKU}">${c.SKU} — ${c.ItemName}</option>`).join('');
+    setPanel(`
+      <div class="panel-head"><h3>Import a batch of adjustments</h3>
+        <div style="display:flex;gap:8px;">
+          ${exportBtnHtml('adjExportBtn','Export log')}
+          ${templateBtnHtml('adjTemplateBtn')}
+        </div></div>
+      <div class="importzone" id="adjDrop">Click to choose a spreadsheet with columns for SKU, Type, Qty, Reason
+        <input type="file" id="adjFile" accept=".xlsx,.xls,.csv">
+      </div>
+      <div id="adjImportBody"></div>
+    `);
+    document.getElementById('adjExportBtn').onclick = async () => {
+      const log = await apiGet('adjustmentLog');
+      exportRows(log, 'inventory-adjustments.xlsx', 'Adjustments');
+    };
+    document.getElementById('adjTemplateBtn').onclick = () => downloadTemplate(
+      ['zSKU','SKU','Barcode','Type','Qty','Reason','Date'], 'adjustment-template.xlsx');
+    document.getElementById('adjDrop').onclick = () => document.getElementById('adjFile').click();
+    document.getElementById('adjFile').onchange = async (ev) => {
+      const file = ev.target.files[0];
+      if(!file) return;
+      const body = document.getElementById('adjImportBody');
+      body.innerHTML = '<div class="loading">parsing…</div>';
+      try{
+        const wb = await readFileAsWorkbook(file);
+        const parsed = sheetRows(wb);
+        if(!parsed.length) throw new Error('No rows found in that file.');
+        const headers = Object.keys(parsed[0]);
+        const guess = (needles) => headers.find(h => needles.some(n => h.toLowerCase().includes(n))) || headers[0];
+        const opts = headers.map(h => `<option value="${h}">${h}</option>`).join('');
+        body.innerHTML = `
+          <div class="batch-bar">
+            <label>SKU column</label><select class="mapSelect" id="amSku">${opts}</select>
+            <label>Type column</label><select class="mapSelect" id="amType">${opts}</select>
+            <label>Qty column</label><select class="mapSelect" id="amQty">${opts}</select>
+            <label>Reason column (optional)</label><select class="mapSelect" id="amReason"><option value="">(none)</option>${opts}</select>
+            <label>Date column (optional)</label><select class="mapSelect" id="amDate"><option value="">use today</option>${opts}</select>
+          </div>
+          <div class="batch-bar">
+            <button class="btn primary" id="adjImportBtn">Preview & import</button>
+            <span class="msg" id="adjImportMsg"></span>
+          </div>
+          <div id="adjPreview"></div>`;
+        document.getElementById('amSku').value = guess(['sku','barcode']);
+        document.getElementById('amType').value = guess(['type']);
+        document.getElementById('amQty').value = guess(['qty','quantity']);
+        document.getElementById('amReason').value = guess(['reason','note']);
+        document.getElementById('adjImportBtn').onclick = async () => {
+          const skuCol = document.getElementById('amSku').value;
+          const typeCol = document.getElementById('amType').value;
+          const qtyCol = document.getElementById('amQty').value;
+          const reasonCol = document.getElementById('amReason').value;
+          const dateCol = document.getElementById('amDate').value;
+          const validTypes = ['Damage / Write-off','Return to Stock','Manual Addition','Manual Deduction'];
+          const items = []; let skipped = 0;
+          parsed.forEach(r => {
+            const z = resolveZsku(r[skuCol], catalog);
+            const type = validTypes.find(t => t.toLowerCase() === String(r[typeCol]||'').trim().toLowerCase());
+            const qty = Number(r[qtyCol]||0);
+            if(!z || !type || qty <= 0){ skipped++; return; }
+            items.push({
+              date: dateCol ? String(r[dateCol]) : today(), type, zsku: z, qty,
+              reason: reasonCol ? String(r[reasonCol]||'') : ''
+            });
+          });
+          const msg = document.getElementById('adjImportMsg');
+          document.getElementById('adjPreview').innerHTML = skipped
+            ? `<div class="empty" style="color:var(--amber);text-align:left;padding:10px 0;">${skipped} row(s) skipped — unmatched SKU, invalid Type, or zero qty. Valid types: ${validTypes.join(', ')}.</div>` : '';
+          if(!items.length){ msg.className='msg err'; msg.textContent = 'Nothing valid to import.'; return; }
+          msg.className='msg'; msg.textContent = 'Saving…';
+          try{
+            const r2 = await apiPostBatched('addAdjustmentBatch', items, {}, 'added',
+              (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Saving batch ${done}/${of}…`; } });
+            msg.className='msg ok'; msg.textContent = `Imported ${r2.total} adjustment(s).`;
+          }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+        };
+      }catch(e){
+        body.innerHTML = `<div class="empty" style="color:var(--red)">${e.message}</div>`;
+      }
+    };
+
+    const manual = document.createElement('div');
+    manual.className = 'panel';
+    manual.innerHTML = `
+      <div class="panel-head"><h3>Or log one manually</h3></div>
+      <form class="form" id="adjForm">
+        <div class="field"><label>Date</label><input type="date" name="date" value="${today()}" required></div>
+        <div class="field"><label>Type</label>
+          <select name="type" required>
+            <option>Damage / Write-off</option>
+            <option>Return to Stock</option>
+            <option>Manual Addition</option>
+            <option>Manual Deduction</option>
+          </select></div>
+        <div class="field span2"><label>SKU</label><select name="zsku" required>${options}</select></div>
+        <div class="field"><label>Qty</label><input type="number" name="qty" min="1" required></div>
+        <div class="field span2"><label>Reason / reference</label><input type="text" name="reason" placeholder="e.g. crushed in transit, SO-1004 return"></div>
+        <div class="form-foot"><button class="btn primary" type="submit">Log adjustment</button><span class="msg" id="adjMsg"></span></div>
+      </form>`;
+    document.getElementById('main').appendChild(manual);
+    document.getElementById('adjForm').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const f = new FormData(ev.target);
+      const msg = document.getElementById('adjMsg');
+      msg.className='msg'; msg.textContent='Saving…';
+      try{
+        await apiPost('addAdjustment', Object.fromEntries(f));
+        msg.className='msg ok'; msg.textContent='Adjustment logged.';
+        ev.target.reset();
+      }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+    };
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderSalesReport(){
+  $main.innerHTML = viewHead('Sales Report', 'End-customer sales from the Monthly Sales Log, grouped by SKU, Brand, or Supplier.') + panelShell('loading');
+  try{
+    const [sales, catalog] = await Promise.all([apiGet('monthlySalesLog'), ensureCatalog()]);
+    const catByZ = {}; catalog.forEach(c => catByZ[c.zSKU] = c);
+
+    function computeGroups(by){
+      const map = {};
+      sales.forEach(s => {
+        const cat = catByZ[s.zSKU] || {};
+        const key = by === 'SKU' ? (s.SKU || s.zSKU) : by === 'Brand' ? (cat.Brand || '(no brand)') : (cat.Supplier || '(no supplier)');
+        map[key] = map[key] || { units: 0, revenue: 0, referral: 0, net: 0 };
+        map[key].units += Number(s.UnitsSold || 0);
+        map[key].revenue += Number(s.Revenue || 0);
+        map[key].referral += Number(s.ReferralFeePaid || 0);
+        map[key].net += Number(s.NetRevenue || 0);
+      });
+      return Object.entries(map).sort((a, b) => b[1].revenue - a[1].revenue);
+    }
+
+    function draw(by){
+      const groups = computeGroups(by);
+      const rowsHtml = groups.map(([key, v]) => `
+        <tr><td class="sku">${key}</td><td class="num">${fmt(v.units)}</td>
+          <td class="num">${fmt(v.revenue)}</td><td class="num">${fmt(v.referral)}</td><td class="num">${fmt(v.net)}</td></tr>`).join('');
+      setPanel(`
+        <div class="panel-head">
+          <div class="toggle-group">
+            <button class="toggle-btn ${by==='SKU'?'active':''}" data-by="SKU">Per SKU</button>
+            <button class="toggle-btn ${by==='Brand'?'active':''}" data-by="Brand">Per Brand</button>
+            <button class="toggle-btn ${by==='Supplier'?'active':''}" data-by="Supplier">Per Supplier</button>
+          </div>
+          <button class="btn" onclick="refreshAll()">Refresh</button>
+        </div>
+        ${groups.length ? `<table><thead><tr><th>${by}</th><th>Units sold</th><th>Revenue</th><th>Referral fees</th><th>Net revenue</th></tr></thead>
+          <tbody>${rowsHtml}</tbody></table>` : emptyState('No sales data yet — import via Log Monthly Sales or the Monthly Sales Log tab.')}
+      `);
+      document.querySelectorAll('.toggle-btn[data-by]').forEach(b => b.onclick = () => draw(b.dataset.by));
+    }
+    draw('SKU');
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderFillRateReport(){
+  $main.innerHTML = viewHead('Supplier Fill Rate', 'How much of what you ordered actually arrived, and the revenue opportunity if fill rate reached 100%.') + panelShell('loading');
+  try{
+    const [poLines, pos, catalog] = await Promise.all([apiGet('purchaseOrderLine'), apiGet('purchaseOrder'), ensureCatalog()]);
+    const catByZ = {}; catalog.forEach(c => catByZ[c.zSKU] = c);
+    const supplierByPO = {}; pos.forEach(p => supplierByPO[p.PONumber] = p.Supplier);
+
+    const skuMap = {};
+    poLines.forEach(l => {
+      const cat = catByZ[l.zSKU] || {};
+      if(!skuMap[l.zSKU]) skuMap[l.zSKU] = { sku: l.SKU || l.zSKU, brand: cat.Brand || '(no brand)', price: Number(cat.Price||0), ordered: 0, received: 0, suppliers: new Set() };
+      skuMap[l.zSKU].ordered += Number(l.QtyOrdered || 0);
+      skuMap[l.zSKU].received += Number(l.QtyReceived || 0);
+      const sup = supplierByPO[l.PONumber];
+      if(sup) skuMap[l.zSKU].suppliers.add(sup);
+    });
+    const skuRows = Object.values(skuMap).map(v => {
+      const missedUnits = Math.max(0, v.ordered - v.received);
+      return Object.assign({}, v, {
+        missedUnits, missedRevenue: missedUnits * v.price,
+        fillRate: v.ordered ? v.received / v.ordered : 0,
+        suppliers: [...v.suppliers].join(', ')
+      });
+    });
+
+    function computeGroups(by){
+      if(by === 'SKU') return skuRows.slice().sort((a,b) => b.missedRevenue - a.missedRevenue);
+      const map = {};
+      skuRows.forEach(r => {
+        map[r.brand] = map[r.brand] || { key: r.brand, ordered: 0, received: 0, missedUnits: 0, missedRevenue: 0, suppliers: new Set() };
+        map[r.brand].ordered += r.ordered; map[r.brand].received += r.received;
+        map[r.brand].missedUnits += r.missedUnits; map[r.brand].missedRevenue += r.missedRevenue;
+        r.suppliers.split(', ').filter(Boolean).forEach(s => map[r.brand].suppliers.add(s));
+      });
+      return Object.values(map).map(v => Object.assign({}, v, {
+        fillRate: v.ordered ? v.received / v.ordered : 0, suppliers: [...v.suppliers].join(', ')
+      })).sort((a,b) => b.missedRevenue - a.missedRevenue);
+    }
+
+    function draw(by){
+      const groups = computeGroups(by);
+      const rowsHtml = groups.map(g => {
+        const label = by === 'SKU' ? g.sku : g.key;
+        const fillChip = g.fillRate >= 0.95 ? `<span class="chip green">${fmt(g.fillRate*100)}%</span>`
+          : g.fillRate >= 0.80 ? `<span class="chip amber">${fmt(g.fillRate*100)}%</span>`
+          : `<span class="chip red">${fmt(g.fillRate*100)}%</span>`;
+        return `<tr><td class="sku">${label}</td><td>${g.suppliers||'—'}</td>
+          <td class="num">${fmt(g.ordered)}</td><td class="num">${fmt(g.received)}</td>
+          <td>${fillChip}</td><td class="num">${fmt(g.missedUnits)}</td>
+          <td class="num" style="color:var(--amber);">${fmt(g.missedRevenue)}</td></tr>`;
+      }).join('');
+      setPanel(`
+        <div class="panel-head">
+          <div class="toggle-group">
+            <button class="toggle-btn ${by==='SKU'?'active':''}" data-by="SKU">Per SKU</button>
+            <button class="toggle-btn ${by==='Brand'?'active':''}" data-by="Brand">Per Brand</button>
+          </div>
+          <button class="btn" onclick="refreshAll()">Refresh</button>
+        </div>
+        ${groups.length ? `<table><thead><tr><th>${by==='SKU'?'SKU':'Brand'}</th><th>Supplier(s)</th><th>Ordered</th><th>Received</th><th>Fill rate</th><th>Missed units</th><th>Missed revenue opportunity</th></tr></thead>
+          <tbody>${rowsHtml}</tbody></table>
+          <div class="empty" style="text-align:left;padding:10px 16px;">Missed revenue = (units ordered but not received) × item price — the revenue opportunity if this supplier had delivered in full. It assumes those units would have sold; treat it as an upper bound, not a guarantee.</div>`
+          : emptyState('No purchase order data yet.')}
+      `);
+      document.querySelectorAll('.toggle-btn[data-by]').forEach(b => b.onclick = () => draw(b.dataset.by));
+    }
+    draw('SKU');
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+async function renderProductInsights(){
+  $main.innerHTML = viewHead('Noon FBN Product Insights', 'Combines Vantage funnel performance with stockout history to estimate lost revenue and flag what to fix.') + panelShell('loading');
+  try{
+    const [funnel, weekly, catalog] = await Promise.all([apiGet('salesFunnelLog'), apiGet('weeklyStockLog'), ensureCatalog()]);
+    const catByZ = {}; catalog.forEach(c => catByZ[c.zSKU] = c);
+
+    // Aggregate funnel data per SKU across all imported periods.
+    const funnelMap = {};
+    funnel.forEach(f => {
+      funnelMap[f.zSKU] = funnelMap[f.zSKU] || { impressions:0, gvs:0, atcs:0, units:0, periods:0 };
+      funnelMap[f.zSKU].impressions += Number(f.Impressions||0);
+      funnelMap[f.zSKU].gvs += Number(f.GVs||0);
+      funnelMap[f.zSKU].atcs += Number(f.ATCs||0);
+      funnelMap[f.zSKU].units += Number(f.Units||0);
+      funnelMap[f.zSKU].periods += 1;
+    });
+
+    // Stockout history per SKU from the weekly saleable-stock trend log.
+    const stockMap = {};
+    weekly.forEach(w => {
+      stockMap[w.zSKU] = stockMap[w.zSKU] || { weeksTracked: 0, stockoutWeeks: 0 };
+      stockMap[w.zSKU].weeksTracked += 1;
+      if(Number(w.SaleableQty||0) === 0) stockMap[w.zSKU].stockoutWeeks += 1;
+    });
+
+    const T = { impressions:1000, ctr:0.02, atccr:0.05, cartcr:0.40 };
+    const zskus = new Set([...Object.keys(funnelMap), ...Object.keys(stockMap)]);
+    const rows = [...zskus].map(z => {
+      const cat = catByZ[z] || {};
+      const fn = funnelMap[z];
+      const st = stockMap[z] || { weeksTracked: 0, stockoutWeeks: 0 };
+      const flags = [];
+      if(fn){
+        const ctr = fn.impressions ? fn.gvs/fn.impressions : 0;
+        const atccr = fn.gvs ? fn.atcs/fn.gvs : 0;
+        const cartcr = fn.atcs ? fn.units/fn.atcs : 0;
+        if(fn.impressions < T.impressions) flags.push('Low impressions: boost ads/keywords');
+        if(ctr < T.ctr) flags.push('Low CTR: improve image/price/title');
+        if(atccr < T.atccr) flags.push('Low ATC rate: improve price/reviews/content');
+        if(cartcr < T.cartcr) flags.push('Low cart conversion: review price/shipping/stock');
+      }
+      const inStockWeeks = st.weeksTracked - st.stockoutWeeks;
+      const avgWeeklyUnits = fn && fn.periods ? fn.units / (fn.periods * 4.33) : 0;
+      const lostUnits = st.stockoutWeeks > 0 ? avgWeeklyUnits * st.stockoutWeeks : 0;
+      const lostRevenue = lostUnits * Number(cat.Price||0);
+      if(st.weeksTracked > 0 && st.stockoutWeeks > 0){
+        flags.unshift(`Out of stock ${st.stockoutWeeks}/${st.weeksTracked} week(s) tracked — est. ${fmt(lostRevenue)} lost revenue`);
+      }
+      return {
+        zsku: z, sku: cat.SKU || z, item: cat.ItemName || '',
+        impressions: fn?fn.impressions:0, units: fn?fn.units:0,
+        stockoutWeeks: st.stockoutWeeks, weeksTracked: st.weeksTracked, lostRevenue,
+        flags: flags.length ? flags : ['Healthy — no issues flagged']
+      };
+    }).sort((a,b) => b.lostRevenue - a.lostRevenue);
+
+    const rowsHtml = rows.map(r => `
+      <tr><td class="sku">${r.sku}</td><td>${r.item}</td>
+        <td class="num">${fmt(r.impressions)}</td><td class="num">${fmt(r.units)}</td>
+        <td class="num">${r.stockoutWeeks}/${r.weeksTracked}</td>
+        <td class="num" style="color:${r.lostRevenue>0?'var(--amber)':'inherit'};">${fmt(r.lostRevenue)}</td>
+        <td style="white-space:normal;max-width:340px;font-size:12px;color:var(--text-dim);">${r.flags.join(' | ')}</td></tr>`).join('');
+    setPanel(`
+      <div class="panel-head"><h3>${rows.length} SKU${rows.length===1?'':'s'} analyzed</h3>
+        <button class="btn" onclick="refreshAll()">Refresh</button></div>
+      ${rows.length ? `<table><thead><tr><th>SKU</th><th>Item</th><th>Impressions</th><th>Units sold</th><th>Stockout weeks</th><th>Est. lost revenue</th><th>Insight</th></tr></thead>
+        <tbody>${rowsHtml}</tbody></table>
+        <div class="empty" style="text-align:left;padding:10px 16px;">Lost revenue = (avg weekly units sold while in stock) × (weeks recorded at 0 saleable qty) × price. Needs both Log Monthly Sales and Weekly Stock Update history to populate — the more weeks tracked, the more reliable this gets.</div>`
+        : emptyState('Import Log Monthly Sales and Weekly Stock Update data first — this report needs both.')}
+    `);
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+// No Project URL / key fields here on purpose — the connection is baked into
+// this file (DEFAULT_CONFIG above), so this screen only shows account status
+// and a sign-out button. To point this file at a different Supabase project
+// or rotate the key, edit DEFAULT_CONFIG in the source and re-host the file.
+function renderSettings(){
+  $main.innerHTML = viewHead('Settings', 'Account') + panelShell('');
+  setPanel(
+    state.session
+      ? `<div style="padding:16px 18px;">
+          <div style="color:var(--text-dim);font-size:13px;margin-bottom:12px;">Signed in as <b style="color:var(--text);">${state.session.user.email}</b></div>
+          <button class="btn" id="signOutBtn">Sign out</button>
+        </div>`
+      : emptyState('Not signed in.')
+  );
+  const signOutBtn = document.getElementById('signOutBtn');
+  if(signOutBtn) signOutBtn.onclick = async () => { await signOut(); render(); };
+}
+
+function viewHead(title, sub){
+  return `<div class="view-head"><h2 class="view-title">${title}</h2><p class="view-sub">${sub}</p></div>`;
+}
+function panelShell(inner){ return `<div class="panel" id="panelBody">${inner==='loading' ? '<div class="loading">loading…</div>' : inner}</div>`; }
+function setPanel(html){ const p = document.getElementById('panelBody'); if(p) p.outerHTML = `<div class="panel" id="panelBody">${html}</div>`; }
+function emptyState(msg){ return `<div class="empty">${msg}</div>`; }
+function errorState(e){ return `<div class="empty" style="color:var(--red)">Couldn't load: ${e.message}</div>`; }
+
+document.querySelectorAll('.nav-item').forEach(n => n.onclick = () => switchView(n.dataset.view));
+
+(async function init(){
+  await loadConfig();
+  if(state.config && state.config.url && state.config.key){
+    try{
+      ensureClient();
+      sb.auth.onAuthStateChange((event, session) => {
+        state.session = session;
+        if(event === 'SIGNED_OUT') setConn(false, 'signed out');
+        render();
+      });
+    }catch(e){ /* bad saved config — Settings screen will handle it */ }
+  }
+  render(); // render() itself validates the session before showing any data view
+})();
+</script>
+</body>
+</html>
