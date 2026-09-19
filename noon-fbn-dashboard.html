@@ -748,7 +748,6 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
         <span class="msg" id="batchMsg"></span>
       </div>`;
     setPanel(`
-      ${rows.length ? batchBar : ''}
       <div class="panel-head" style="flex-wrap:wrap;gap:10px;">
         <h3 id="rowCountLabel">${rows.length} SKU${rows.length===1?'':'s'} tracked</h3>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -761,6 +760,7 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div>
       </div>
+      ${rows.length ? batchBar : ''}
       ${rows.length ? `<table>
         <thead><tr><th><input type="checkbox" id="selectAllCheck" title="Select all shown rows"></th><th>SKU</th><th>Item</th><th>${stockLabel}</th><th>Weeks cover</th><th>MOQ</th><th>Qty</th></tr></thead>
         <tbody>${body}</tbody></table>` : emptyState('No rows yet — add zSKUs to this planner in the sheet.')}
