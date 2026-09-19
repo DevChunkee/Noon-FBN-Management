@@ -526,6 +526,12 @@ function templateBtnHtml(id, label){
 
 // ---------------- views ----------------
 function switchView(v){
+  if(v !== state.view && state.view === 'catalog'){
+    // Filters/selection are scoped to staying on this module — leaving it
+    // (even to come back later) starts clean, same as a fresh page load.
+    state.catalogFilters = { brands: [], suppliers: [], flags: [] };
+    state.catalogSelected = new Set();
+  }
   state.view = v;
   state.selectedSO = null;
   state.selectedPO = null;
@@ -633,17 +639,28 @@ async function renderCatalog(){
         </td>
         <td>${flagChip(c.MarginFlag)}</td>
       </tr>`).join('');
-    const distinct = (key) => Array.from(new Set(state.catalog.map(c => c[key]).filter(v => v))).sort();
-    const brands = distinct('Brand'), suppliers = distinct('Supplier');
-    const flagValues = ['OK','Low Margin','Discontinued'];
-    // Multi-select "checklist dropdown": a button showing the current
-    // selection count, opening a small checkbox panel underneath.
+    // Faceted options: each dimension's available checkboxes are computed
+    // from the OTHER active filters, so e.g. picking Brand=Beso narrows the
+    // Supplier and Flag lists down to only values that actually co-occur
+    // with a Beso item — not every supplier/flag in the whole catalog.
+    const DIMS = { brand: { field: 'Brand', key: 'brands' }, supplier: { field: 'Supplier', key: 'suppliers' }, flag: { field: 'MarginFlag', key: 'flags' } };
+    function optionsFor(dim){
+      const subset = state.catalog.filter(c => {
+        for(const d in DIMS){
+          if(d === dim) continue;
+          const sel = state.catalogFilters[DIMS[d].key];
+          if(sel.length && !sel.includes(c[DIMS[d].field])) return false;
+        }
+        return true;
+      });
+      return Array.from(new Set(subset.map(c => c[DIMS[dim].field]).filter(v => v))).sort();
+    }
     function msFilterHtml(id, label, options, selected){
       return `
       <div class="msfilter" id="ms_${id}">
         <button type="button" class="btn msfilter-btn" id="ms_${id}_btn">${label}${selected.length ? ` (${selected.length})` : ''}</button>
         <div class="msfilter-panel" id="ms_${id}_panel" style="display:none;">
-          ${options.length ? options.map(v => `<label><input type="checkbox" class="ms_${id}_cb" value="${v}" ${selected.includes(v)?'checked':''}> ${v}</label>`).join('') : `<div style="padding:4px 2px;color:var(--text-dim);font-size:12px;">None yet</div>`}
+          ${options.length ? options.map(v => `<label><input type="checkbox" class="ms_${id}_cb" value="${v}" ${selected.includes(v)?'checked':''}> ${v}</label>`).join('') : `<div style="padding:4px 2px;color:var(--text-dim);font-size:12px;">No matching values</div>`}
         </div>
       </div>`;
     }
@@ -658,9 +675,9 @@ async function renderCatalog(){
       ${state.catalog.length ? `
       <div class="panel-head" style="flex-wrap:wrap;gap:10px;">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          ${msFilterHtml('brand', 'Brand', brands, state.catalogFilters.brands)}
-          ${msFilterHtml('supplier', 'Supplier', suppliers, state.catalogFilters.suppliers)}
-          ${msFilterHtml('flag', 'Flag', flagValues, state.catalogFilters.flags)}
+          ${msFilterHtml('brand', 'Brand', optionsFor('brand'), state.catalogFilters.brands)}
+          ${msFilterHtml('supplier', 'Supplier', optionsFor('supplier'), state.catalogFilters.suppliers)}
+          ${msFilterHtml('flag', 'Flag', optionsFor('flag'), state.catalogFilters.flags)}
           <button class="btn" id="filterClearBtn">Clear filter</button>
         </div>
         <span class="msg" id="selCount" style="color:var(--text-dim);">0 selected</span>
@@ -720,28 +737,53 @@ async function renderCatalog(){
       if(selectAll) selectAll.checked = false;
     }
     if(state.catalog.length){
-      // Wire each multi-select dropdown: toggle open/close, sync checkbox
-      // clicks into state.catalogFilters, update the button's count label.
-      function wireMsFilter(id, stateKey){
-        const btn = document.getElementById(`ms_${id}_btn`);
-        const panel = document.getElementById(`ms_${id}_panel`);
-        if(!btn) return;
+      const dimLabels = { brand: 'Brand', supplier: 'Supplier', flag: 'Flag' };
+      function setBtnLabel(dim){
+        const btn = document.getElementById(`ms_${dim}_btn`);
+        const n = state.catalogFilters[DIMS[dim].key].length;
+        if(btn) btn.textContent = n ? `${dimLabels[dim]} (${n})` : dimLabels[dim];
+      }
+      function wireCheckboxes(dim){
+        const panel = document.getElementById(`ms_${dim}_panel`);
+        panel.querySelectorAll(`.ms_${dim}_cb`).forEach(cb => {
+          cb.onchange = () => {
+            state.catalogFilters[DIMS[dim].key] = Array.from(panel.querySelectorAll(`.ms_${dim}_cb:checked`)).map(c => c.value);
+            setBtnLabel(dim);
+            applyCatalogFilter();
+            rebuildOtherPanels(dim);
+          };
+        });
+      }
+      // After any filter changes, recompute the OTHER two dropdowns' option
+      // lists from the newly-narrowed subset, dropping any of their own
+      // selections that no longer apply, then re-render just those panels.
+      function rebuildOtherPanels(changedDim){
+        Object.keys(DIMS).forEach(dim => {
+          if(dim === changedDim) return;
+          const opts = optionsFor(dim);
+          const stateKey = DIMS[dim].key;
+          const stillValid = state.catalogFilters[stateKey].filter(v => opts.includes(v));
+          const changed = stillValid.length !== state.catalogFilters[stateKey].length;
+          state.catalogFilters[stateKey] = stillValid;
+          const panel = document.getElementById(`ms_${dim}_panel`);
+          panel.innerHTML = opts.length
+            ? opts.map(v => `<label><input type="checkbox" class="ms_${dim}_cb" value="${v}" ${stillValid.includes(v)?'checked':''}> ${v}</label>`).join('')
+            : `<div style="padding:4px 2px;color:var(--text-dim);font-size:12px;">No matching values</div>`;
+          wireCheckboxes(dim);
+          setBtnLabel(dim);
+          if(changed) applyCatalogFilter();
+        });
+      }
+      function wireMsToggle(dim){
+        const btn = document.getElementById(`ms_${dim}_btn`);
+        const panel = document.getElementById(`ms_${dim}_panel`);
         btn.onclick = (e) => {
           e.stopPropagation();
           document.querySelectorAll('.msfilter-panel').forEach(p => { if(p !== panel) p.style.display = 'none'; });
           panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
         };
-        panel.querySelectorAll(`.ms_${id}_cb`).forEach(cb => {
-          cb.onchange = () => {
-            state.catalogFilters[stateKey] = Array.from(panel.querySelectorAll(`.ms_${id}_cb:checked`)).map(c => c.value);
-            btn.textContent = state.catalogFilters[stateKey].length ? `${btn.textContent.replace(/\s*\(\d+\)$/,'')} (${state.catalogFilters[stateKey].length})` : btn.textContent.replace(/\s*\(\d+\)$/,'');
-            applyCatalogFilter();
-          };
-        });
       }
-      wireMsFilter('brand', 'brands');
-      wireMsFilter('supplier', 'suppliers');
-      wireMsFilter('flag', 'flags');
+      Object.keys(DIMS).forEach(dim => { wireMsToggle(dim); wireCheckboxes(dim); });
       document.addEventListener('click', function closeMsPanels(e){
         if(!e.target.closest('.msfilter')) document.querySelectorAll('.msfilter-panel').forEach(p => p.style.display = 'none');
       });
