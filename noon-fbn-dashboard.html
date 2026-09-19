@@ -1413,7 +1413,6 @@ async function renderSalesOrders(){
   $main.innerHTML = viewHead('Sales Orders', 'Shipments sent to Noon FBN. Click one to view or add its items.') + panelShell('loading');
   try{
     const rows = await apiGet('salesOrder');
-    const nextNum = await apiGet('nextSONumber').catch(() => ({number:''}));
     const chip = (status) => {
       if(status === '\u2713 Confirmed Match') return `<span class="chip green">${status}</span>`;
       if(status === '\u26a0 Discrepancy') return `<span class="chip red">${status}</span>`;
@@ -1430,39 +1429,62 @@ async function renderSalesOrders(){
         <td>${chip(r.MatchStatus)}</td>
       </tr>`).join('') : '';
     setPanel(`
-      <div class="panel-head"><h3>Create a new Sales Order</h3></div>
-      <form class="form" id="newSOForm">
-        <div class="field"><label>SO number</label><input type="text" name="soNumber" value="${nextNum.number||''}" required></div>
-        <div class="field"><label>Ship date</label><input type="date" name="shipDate" value="${today()}" required></div>
-        <div class="form-foot"><button class="btn primary" type="submit">Create & open</button><span class="msg" id="newSOMsg"></span></div>
-      </form>`);
-    const listPanel = document.createElement('div');
-    listPanel.className = 'panel';
-    listPanel.innerHTML = `
       <div class="panel-head"><h3>${rows.length} order${rows.length===1?'':'s'}</h3>
-        <button class="btn" onclick="refreshAll()">Refresh</button></div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn primary" id="newSOBtn">Create new Sales Order</button>
+          <button class="btn" onclick="refreshAll()">Refresh</button>
+        </div></div>
       ${rows.length ? `<table>
         <thead><tr><th>SO</th><th>Ship date</th><th>Sent</th><th>Received</th><th>Status</th><th>Match</th></tr></thead>
-        <tbody>${body}</tbody></table>` : emptyState('No sales orders yet — create one above.')}`;
-    document.getElementById('main').appendChild(listPanel);
-
+        <tbody>${body}</tbody></table>` : emptyState('No sales orders yet — click "Create new Sales Order" above.')}
+    `);
     document.querySelectorAll('tr.clickRow[data-so]').forEach(tr => {
       tr.style.cursor = 'pointer';
       tr.onclick = () => { state.selectedSO = tr.dataset.so; renderSalesOrderDetail(); };
     });
-    document.getElementById('newSOForm').onsubmit = async (ev) => {
-      ev.preventDefault();
-      const f = Object.fromEntries(new FormData(ev.target));
-      const msg = document.getElementById('newSOMsg');
-      msg.className='msg'; msg.textContent='Creating…';
-      try{
-        await apiPost('createSalesOrder', f);
-        state.selectedSO = f.soNumber;
-        renderSalesOrderDetail();
-      }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
-    };
+    document.getElementById('newSOBtn').onclick = openCreateSOModal;
   }catch(e){ setPanel(errorState(e)); }
 }
+
+async function openCreateSOModal(){
+  const nextNum = await apiGet('nextSONumber').catch(() => ({number:''}));
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'createSOOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="panel-head"><h3>Create a new Sales Order</h3></div>
+      <form class="form" id="newSOForm">
+        <div class="field"><label>SO number</label><input type="text" name="soNumber" value="${nextNum.number||''}" required></div>
+        <div class="field"><label>Ship date</label><input type="date" name="shipDate" value="${today()}" required></div>
+        <div class="form-foot">
+          <button class="btn primary" type="submit">Create & open</button>
+          <button class="btn" type="button" id="createSOCancelBtn">Cancel</button>
+          <span class="msg" id="newSOMsg"></span>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('createSOOverlay'); };
+  document.getElementById('createSOCancelBtn').onclick = () => closeModalOverlay('createSOOverlay');
+  const soForm = document.getElementById('newSOForm');
+  soForm.addEventListener('keydown', (e) => {
+    if(e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') e.preventDefault();
+  });
+  soForm.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = Object.fromEntries(new FormData(ev.target));
+    const msg = document.getElementById('newSOMsg');
+    msg.className='msg'; msg.textContent='Creating…';
+    try{
+      await apiPost('createSalesOrder', f);
+      state.selectedSO = f.soNumber;
+      closeModalOverlay('createSOOverlay');
+      renderSalesOrderDetail();
+    }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+  };
+}
+
 
 async function renderSalesOrderDetail(){
   const soNumber = state.selectedSO;
