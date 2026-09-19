@@ -723,7 +723,7 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
       ? await apiGet('nextSONumber').catch(() => ({number:''}))
       : await apiGet('nextPONumber').catch(() => ({number:''}));
     const body = rows.length ? rows.map(r => `
-      <tr data-zsku="${r.zSKU}">
+      <tr data-zsku="${r.zSKU}" data-stock="${Number(r[stockKey])||0}">
         <td><input type="checkbox" class="rowCheck" ${Number(r[qtyKey])>0?'checked':''}></td>
         <td class="sku">${r.SKU||r.zSKU}</td>
         <td>${r.ItemName||''}</td>
@@ -747,12 +747,49 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
         <span class="msg" id="batchMsg"></span>
       </div>`;
     setPanel(`
-      <div class="panel-head"><h3>${rows.length} SKU${rows.length===1?'':'s'} tracked</h3>
-        <button class="btn" onclick="refreshAll()">Refresh</button></div>
+      <div class="panel-head" style="flex-wrap:wrap;gap:10px;">
+        <h3 id="rowCountLabel">${rows.length} SKU${rows.length===1?'':'s'} tracked</h3>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <label style="font-size:12px;color:var(--text-dim);">${stockLabel} qty</label>
+          <input type="number" id="filterMin" placeholder="min" style="width:70px;">
+          <input type="number" id="filterMax" placeholder="max" style="width:70px;">
+          <button class="btn" id="filterClearBtn">Clear filter</button>
+          <button class="btn" onclick="refreshAll()">Refresh</button>
+        </div>
+      </div>
       ${rows.length ? `<table>
-        <thead><tr><th></th><th>SKU</th><th>Item</th><th>${stockLabel}</th><th>Weeks cover</th><th>MOQ</th><th>Qty</th></tr></thead>
+        <thead><tr><th><input type="checkbox" id="selectAllCheck" title="Select all shown rows"></th><th>SKU</th><th>Item</th><th>${stockLabel}</th><th>Weeks cover</th><th>MOQ</th><th>Qty</th></tr></thead>
         <tbody>${body}</tbody></table>${batchBar}` : emptyState('No rows yet — add zSKUs to this planner in the sheet.')}
     `);
+    function applyStockFilter(){
+      const min = document.getElementById('filterMin').value;
+      const max = document.getElementById('filterMax').value;
+      let shown = 0;
+      document.querySelectorAll('tr[data-zsku]').forEach(tr => {
+        const stock = Number(tr.dataset.stock);
+        let show = true;
+        if(min !== '' && stock < Number(min)) show = false;
+        if(max !== '' && stock > Number(max)) show = false;
+        tr.style.display = show ? '' : 'none';
+        if(show) shown++;
+      });
+      const label = document.getElementById('rowCountLabel');
+      if(label) label.textContent = (min !== '' || max !== '') ? `${shown} of ${rows.length} SKUs (filtered)` : `${rows.length} SKU${rows.length===1?'':'s'} tracked`;
+      const selectAll = document.getElementById('selectAllCheck');
+      if(selectAll) selectAll.checked = false;
+    }
+    const filterMin = document.getElementById('filterMin');
+    const filterMax = document.getElementById('filterMax');
+    if(filterMin){ filterMin.oninput = applyStockFilter; filterMax.oninput = applyStockFilter; }
+    const filterClearBtn = document.getElementById('filterClearBtn');
+    if(filterClearBtn) filterClearBtn.onclick = () => { filterMin.value = ''; filterMax.value = ''; applyStockFilter(); };
+    const selectAllCheck = document.getElementById('selectAllCheck');
+    if(selectAllCheck) selectAllCheck.onchange = () => {
+      const checked = selectAllCheck.checked;
+      document.querySelectorAll('tr[data-zsku]').forEach(tr => {
+        if(tr.style.display !== 'none') tr.querySelector('.rowCheck').checked = checked;
+      });
+    };
     const btn = document.getElementById('batchAddBtn');
     if(btn) btn.onclick = async () => {
       const items = [];
