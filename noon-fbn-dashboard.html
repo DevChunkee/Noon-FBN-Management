@@ -823,7 +823,7 @@ async function renderCatalog(){
         <span class="msg" id="selCount" style="color:var(--text-dim);">0 selected</span>
       </div>
       <table>
-        <thead><tr><th><input type="checkbox" id="catalogSelectAll" title="Select all shown rows"></th><th>SKU</th><th>Item</th><th>Brand</th><th>Supplier</th><th>Cost</th><th>Price</th><th>Margin</th><th>Internal WH</th><th>Noon FBN</th><th>Status</th><th>Flag</th></tr></thead>
+        <thead><tr><th><input type="checkbox" id="catalogSelectAll" title="Select all shown rows"></th><th>SKU</th><th>Item</th><th>Brand</th><th>Supplier</th><th class="num">Cost</th><th class="num">Price</th><th class="num">Margin</th><th class="num">Internal WH</th><th class="num">Noon FBN</th><th>Status</th><th>Flag</th></tr></thead>
         <tbody>${rows}</tbody></table>` : emptyState('No SKUs yet — click "Add new SKU" above.')}
     `);
     document.getElementById('catalogExportBtn').onclick = () => {
@@ -1183,7 +1183,7 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
       </div>
       ${rows.length ? batchBar : ''}
       ${rows.length ? `<table>
-        <thead><tr><th><input type="checkbox" id="selectAllCheck" title="Select all shown rows"></th><th>SKU</th><th>Item</th><th>${stockLabel}</th><th>Weeks cover</th><th>MOQ</th><th>Qty</th></tr></thead>
+        <thead><tr><th><input type="checkbox" id="selectAllCheck" title="Select all shown rows"></th><th>SKU</th><th>Item</th><th class="num">${stockLabel}</th><th class="num">Weeks cover</th><th class="num">MOQ</th><th class="num">Qty</th></tr></thead>
         <tbody>${body}</tbody></table>` : emptyState('No rows yet — add zSKUs to this planner in the sheet.')}
     `);
     function applyStockFilter(){
@@ -1286,7 +1286,7 @@ async function renderShipments(){
       <div class="panel-head"><h3>${rows.length} shipment${rows.length===1?'':'s'}</h3>
         <button class="btn" onclick="refreshAll()">Refresh</button></div>
       ${rows.length ? `<table>
-        <thead><tr><th>SO</th><th>Ship date</th><th>Expected sellable</th><th>Sent</th><th>Received</th><th>Damaged/short</th><th>Status</th><th>Match</th></tr></thead>
+        <thead><tr><th>SO</th><th>Ship date</th><th>Expected sellable</th><th class="num">Sent</th><th class="num">Received</th><th class="num">Damaged/short</th><th>Status</th><th>Match</th></tr></thead>
         <tbody>${body}</tbody></table>` : emptyState('No shipments logged yet — use "Log shipment (SO)".')}
     `);
   }catch(e){ setPanel(errorState(e)); }
@@ -1435,7 +1435,7 @@ async function renderSalesOrders(){
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div></div>
       ${rows.length ? `<table>
-        <thead><tr><th>SO</th><th>Ship date</th><th>Sent</th><th>Received</th><th>Status</th><th>Match</th></tr></thead>
+        <thead><tr><th>SO</th><th>Ship date</th><th class="num">Sent</th><th class="num">Received</th><th>Status</th><th>Match</th></tr></thead>
         <tbody>${body}</tbody></table>` : emptyState('No sales orders yet — click "Create new Sales Order" above.')}
     `);
     document.querySelectorAll('tr.clickRow[data-so]').forEach(tr => {
@@ -1529,7 +1529,7 @@ async function renderSalesOrderDetail(){
     linesPanel.innerHTML = `
       <div class="panel-head"><h3>${myLines.length} line item(s)</h3>
         ${myLines.length ? exportBtnHtml('soExportBtn','Export lines') : ''}</div>
-      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item</th><th>Planned</th><th>Confirmed</th><th>Effective</th><th>Received</th><th>Damaged</th><th>Discrepancy</th><th>Status</th><th>Shortage reason</th></tr></thead>
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item</th><th class="num">Planned</th><th class="num">Confirmed</th><th class="num">Effective</th><th class="num">Received</th><th class="num">Damaged</th><th class="num">Discrepancy</th><th>Status</th><th>Shortage reason</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>` : emptyState('No items yet — add one below or import a file.')}`;
     document.getElementById('main').appendChild(linesPanel);
     const soExportBtn = document.getElementById('soExportBtn');
@@ -1545,7 +1545,7 @@ async function renderSalesOrderDetail(){
       <div class="panel-head"><h3>Add items</h3>
         <button class="btn" id="soShowImportBtn">Import items</button></div>
       <table id="soAddItemsTable">
-        <thead><tr><th>Item (zSKU, SKU or barcode)</th><th>Qty sent</th><th></th></tr></thead>
+        <thead><tr><th>Item (zSKU, SKU or barcode)</th><th class="num">Qty sent</th><th></th></tr></thead>
         <tbody id="soAddItemsBody">
           <tr class="soAddRow">
             <td><input type="text" class="soItemInput" list="soItemOptions" placeholder="Type or pick an item" autocomplete="off" style="width:100%;">
@@ -1701,7 +1701,7 @@ async function renderPurchaseOrders(){
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div></div>
       ${rows.length ? `<table>
-        <thead><tr><th>PO</th><th>Date</th><th>Supplier</th><th>Units</th><th>Cost</th><th>Status</th></tr></thead>
+        <thead><tr><th>PO</th><th>Date</th><th>Supplier</th><th class="num">Units</th><th class="num">Cost</th><th>Status</th></tr></thead>
         <tbody>${body}</tbody></table>` : emptyState('No purchase orders yet — click "Create new Purchase Order" above.')}
     `);
     document.querySelectorAll('tr.clickRow[data-po]').forEach(tr => {
@@ -1836,7 +1836,7 @@ async function renderPurchaseOrderDetail(){
           ${myLines.length ? exportBtnHtml('poExportBtn','Export lines') : ''}
           ${myLines.length && !isCancelled ? `<button class="btn" id="saveConfirmedBtn">Save confirmed qty</button>` : ''}
         </div></div>
-      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Qty ordered</th><th>Unit cost</th><th>Line total</th><th>Confirmed qty</th><th>Qty received</th></tr></thead>
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th class="num">Qty ordered</th><th class="num">Unit cost</th><th class="num">Line total</th><th class="num">Confirmed qty</th><th class="num">Qty received</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
         <div class="empty" style="text-align:left;padding:10px 16px;">Confirmed qty defaults to Qty Ordered — edit once your supplier commits to a different amount, then Save. Qty Received is filled in from the Warehouse module's Receipt screen.</div>`
         : emptyState('No items yet — add one below or import a file.')}`;
@@ -1874,7 +1874,7 @@ async function renderPurchaseOrderDetail(){
       <div class="panel-head"><h3>Add items</h3>
         <button class="btn" id="poShowImportBtn">Import items</button></div>
       <table id="poAddItemsTable">
-        <thead><tr><th>Item (zSKU, SKU or barcode)</th><th>Qty ordered</th><th></th></tr></thead>
+        <thead><tr><th>Item (zSKU, SKU or barcode)</th><th class="num">Qty ordered</th><th></th></tr></thead>
         <tbody id="poAddItemsBody">
           <tr class="poAddRow">
             <td><input type="text" class="poItemInput" list="poItemOptions" placeholder="Type or pick an item" autocomplete="off" style="width:100%;">
@@ -2086,7 +2086,7 @@ async function renderGRN(){
             <label>GRN date</label><input type="date" id="grnImportDate" value="${grnDate}">
           </div>
           ${warn}
-          <table><thead><tr><th>SKU</th><th>Qty received</th><th>Qty damaged/short</th></tr></thead>
+          <table><thead><tr><th>SKU</th><th class="num">Qty received</th><th class="num">Qty damaged/short</th></tr></thead>
             <tbody>${rowsHtml}</tbody></table>
           <div class="batch-bar">
             <button class="btn primary" id="grnImportBtn">Import ${zskus.length} SKU row(s)</button>
@@ -2219,7 +2219,7 @@ async function renderSalesFunnel(){
         body.innerHTML = `
           <div class="batch-bar"><label>Period</label><input type="text" id="funnelPeriod" value="${period}" style="width:100px;"></div>
           ${warn}
-          <table><thead><tr><th>SKU</th><th>Impressions</th><th>GVs</th><th>ATCs</th><th>Units</th><th>Status</th><th>Insight</th></tr></thead>
+          <table><thead><tr><th>SKU</th><th class="num">Impressions</th><th class="num">GVs</th><th class="num">ATCs</th><th class="num">Units</th><th>Status</th><th>Insight</th></tr></thead>
             <tbody>${rowsHtml}</tbody></table>
           <div class="batch-bar">
             <button class="btn primary" id="funnelImportBtn">Import ${zskus.length} SKU row(s)</button>
@@ -2396,7 +2396,7 @@ async function renderSalesReport(){
           </div>
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div>
-        ${groups.length ? `<table><thead><tr><th>${by}</th><th>Units sold</th><th>Revenue</th><th>Referral fees</th><th>Net revenue</th></tr></thead>
+        ${groups.length ? `<table><thead><tr><th>${by}</th><th class="num">Units sold</th><th class="num">Revenue</th><th class="num">Referral fees</th><th class="num">Net revenue</th></tr></thead>
           <tbody>${rowsHtml}</tbody></table>` : emptyState('No sales data yet — import via Log Monthly Sales or the Monthly Sales Log tab.')}
       `);
       document.querySelectorAll('.toggle-btn[data-by]').forEach(b => b.onclick = () => draw(b.dataset.by));
@@ -2464,7 +2464,7 @@ async function renderFillRateReport(){
           </div>
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div>
-        ${groups.length ? `<table><thead><tr><th>${by==='SKU'?'SKU':'Brand'}</th><th>Supplier(s)</th><th>Ordered</th><th>Received</th><th>Fill rate</th><th>Missed units</th><th>Missed revenue opportunity</th></tr></thead>
+        ${groups.length ? `<table><thead><tr><th>${by==='SKU'?'SKU':'Brand'}</th><th>Supplier(s)</th><th class="num">Ordered</th><th class="num">Received</th><th>Fill rate</th><th class="num">Missed units</th><th class="num">Missed revenue opportunity</th></tr></thead>
           <tbody>${rowsHtml}</tbody></table>
           <div class="empty" style="text-align:left;padding:10px 16px;">Missed revenue = (units ordered but not received) × item price — the revenue opportunity if this supplier had delivered in full. It assumes those units would have sold; treat it as an upper bound, not a guarantee.</div>`
           : emptyState('No purchase order data yet.')}
@@ -2540,7 +2540,7 @@ async function renderProductInsights(){
     setPanel(`
       <div class="panel-head"><h3>${rows.length} SKU${rows.length===1?'':'s'} analyzed</h3>
         <button class="btn" onclick="refreshAll()">Refresh</button></div>
-      ${rows.length ? `<table><thead><tr><th>SKU</th><th>Item</th><th>Impressions</th><th>Units sold</th><th>Stockout weeks</th><th>Est. lost revenue</th><th>Insight</th></tr></thead>
+      ${rows.length ? `<table><thead><tr><th>SKU</th><th>Item</th><th class="num">Impressions</th><th class="num">Units sold</th><th class="num">Stockout weeks</th><th class="num">Est. lost revenue</th><th>Insight</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
         <div class="empty" style="text-align:left;padding:10px 16px;">Lost revenue = (avg weekly units sold while in stock) × (weeks recorded at 0 saleable qty) × price. Needs both Log Monthly Sales and Weekly Stock Update history to populate — the more weeks tracked, the more reliable this gets.</div>`
         : emptyState('Import Log Monthly Sales and Weekly Stock Update data first — this report needs both.')}
@@ -2574,7 +2574,7 @@ async function renderSuppliers(){
   setPanel(`
     <div class="panel-head"><h3>${rows.length} supplier${rows.length===1?'':'s'}</h3>
       <button class="btn primary" id="supplierAddBtn">Add supplier</button></div>
-    ${rows.length ? `<table><thead><tr><th>Name</th><th>Contact</th><th>Phone</th><th>Email</th><th>Lead time (wks)</th><th>Status</th><th>Notes</th><th></th></tr></thead>
+    ${rows.length ? `<table><thead><tr><th>Name</th><th>Contact</th><th>Phone</th><th>Email</th><th class="num">Lead time (wks)</th><th>Status</th><th>Notes</th><th></th></tr></thead>
       <tbody>${rowsHtml}</tbody></table>`
       : emptyState('No suppliers yet — add one to start populating the Master Catalog and Purchase Order supplier fields.')}
   `);
