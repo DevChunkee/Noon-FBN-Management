@@ -106,6 +106,13 @@
   .batch-bar label{font-size:12px;color:var(--text-dim);margin-right:4px;}
   select.mapSelect{font-size:12px;padding:5px 7px;}
   .toggle-group{display:flex;gap:6px;}
+
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:100;
+    display:flex;align-items:center;justify-content:center;padding:20px;}
+  .modal{background:var(--panel);border:1px solid var(--border);border-radius:10px;max-width:640px;width:100%;max-height:90vh;overflow-y:auto;}
+  .modal .panel-head{border-radius:10px 10px 0 0;}
+  tr.clickable{cursor:pointer;}
+  tr.clickable:hover{background:var(--panel-alt);}
   .toggle-btn{background:var(--panel-alt);border:1px solid var(--border);color:var(--text-dim);
     border-radius:5px;padding:6px 12px;font-size:12.5px;cursor:pointer;font-family:var(--sans);}
   .toggle-btn.active{background:var(--blue);border-color:var(--blue);color:#0B0F16;font-weight:600;}
@@ -339,6 +346,16 @@ async function apiPost(action, payload){
     case 'updateCatalogStatus': {
       const { error } = await client.from('master_catalog').update({ status: payload.status }).eq('zsku', payload.zsku);
       if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'updateCatalogItem': {
+      const { error } = await client.from('master_catalog').update({
+        barcode: payload.barcode || null, sku: payload.sku || null, item_name: payload.itemName,
+        moq: Number(payload.moq||0), cost: Number(payload.cost||0), price: Number(payload.price||0),
+        outbound_fee: Number(payload.outboundFee||0), storage_cost: Number(payload.storageCost||0),
+        brand: payload.brand || null, supplier: payload.supplier || null, status: payload.status || 'Active'
+      }).eq('zsku', payload.zsku);
+      if(error) throw new Error(error.code === '23505' ? 'That SKU or Barcode is already used by another item.' : error.message);
+      result = { ok:true }; break;
     }
     case 'addCatalogItem': {
       const { error } = await client.from('master_catalog').insert({
@@ -581,7 +598,7 @@ async function renderCatalog(){
       return '—';
     };
     const rows = state.catalog.map(c => `
-      <tr data-zsku="${c.zSKU}">
+      <tr data-zsku="${c.zSKU}" class="clickable" title="Click to edit this item">
         <td class="sku">${c.SKU}</td>
         <td>${c.ItemName}</td>
         <td>${c.Brand||''}</td>
@@ -590,7 +607,7 @@ async function renderCatalog(){
         <td class="num">${fmt(c.Price)}</td>
         <td class="num">${fmt((c.MarginPct||0)*100)}%</td>
         <td>
-          <select class="statusSelect" data-zsku="${c.zSKU}">
+          <select class="statusSelect" data-zsku="${c.zSKU}" onclick="event.stopPropagation()">
             <option ${c.Status==='Active'?'selected':''}>Active</option>
             <option ${c.Status==='Discontinued'?'selected':''}>Discontinued</option>
           </select>
@@ -622,6 +639,9 @@ async function renderCatalog(){
         }catch(e){ alert('Could not update status: ' + e.message); }
         sel.disabled = false;
       };
+    });
+    document.querySelectorAll('tr.clickable[data-zsku]').forEach(tr => {
+      tr.onclick = () => openCatalogEditModal(tr.dataset.zsku);
     });
 
     const addPanelHtml = `
@@ -716,6 +736,61 @@ async function renderCatalog(){
   }catch(e){ setPanel(errorState(e)); }
 }
 
+function closeCatalogEditModal(){
+  const overlay = document.getElementById('catalogEditOverlay');
+  if(overlay) overlay.remove();
+}
+function openCatalogEditModal(zsku){
+  const c = state.catalog.find(x => x.zSKU === zsku);
+  if(!c) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'catalogEditOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="panel-head"><h3>Edit ${c.SKU} — ${c.zSKU}</h3></div>
+      <form class="form" id="catalogEditForm">
+        <div class="field"><label>zSKU (fixed)</label><input type="text" value="${c.zSKU}" disabled></div>
+        <div class="field"><label>SKU</label><input type="text" name="sku" value="${c.SKU||''}" required></div>
+        <div class="field span2"><label>Item name</label><input type="text" name="itemName" value="${(c.ItemName||'').replace(/"/g,'&quot;')}" required></div>
+        <div class="field"><label>Barcode</label><input type="text" name="barcode" value="${c.Barcode||''}"></div>
+        <div class="field"><label>Brand</label><input type="text" name="brand" value="${c.Brand||''}"></div>
+        <div class="field"><label>Supplier</label><input type="text" name="supplier" value="${c.Supplier||''}"></div>
+        <div class="field"><label>MOQ</label><input type="number" name="moq" min="0" value="${c.MOQ||0}"></div>
+        <div class="field"><label>Cost</label><input type="number" name="cost" step="0.01" min="0" value="${c.Cost||0}" required></div>
+        <div class="field"><label>Price</label><input type="number" name="price" step="0.01" min="0" value="${c.Price||0}" required></div>
+        <div class="field"><label>Outbound fee</label><input type="number" name="outboundFee" step="0.01" min="0" value="${c.OutboundFee||0}"></div>
+        <div class="field"><label>Storage cost (monthly)</label><input type="number" name="storageCost" step="0.01" min="0" value="${c.StorageCost||0}"></div>
+        <div class="field"><label>Status</label>
+          <select name="status">
+            <option ${c.Status==='Active'?'selected':''}>Active</option>
+            <option ${c.Status==='Discontinued'?'selected':''}>Discontinued</option>
+          </select>
+        </div>
+        <div class="form-foot">
+          <button class="btn primary" type="submit">Save</button>
+          <button class="btn" type="button" id="catalogEditCancelBtn">Cancel</button>
+          <span class="msg" id="catalogEditMsg"></span>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if(e.target === overlay) closeCatalogEditModal(); };
+  document.getElementById('catalogEditCancelBtn').onclick = closeCatalogEditModal;
+  document.getElementById('catalogEditForm').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = Object.fromEntries(new FormData(ev.target));
+    const msg = document.getElementById('catalogEditMsg');
+    msg.className = 'msg'; msg.textContent = 'Saving…';
+    try{
+      await apiPost('updateCatalogItem', Object.assign({ zsku }, f));
+      state.catalog = [];
+      closeCatalogEditModal();
+      render();
+    }catch(e){ msg.className = 'msg err'; msg.textContent = e.message; }
+  };
+}
+
 async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, stockKey, stockLabel, mode){
   $main.innerHTML = viewHead(title, sub) + panelShell('loading');
   try{
@@ -756,7 +831,8 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
           <input type="number" id="filterMax" placeholder="max" style="width:70px;">
           <button class="btn" id="filterClearBtn">Clear filter</button>
           ${rows.length ? `<button class="btn" id="selectAllBtn">Select all</button>
-          <button class="btn" id="unselectAllBtn">Unselect all</button>` : ''}
+          <button class="btn" id="unselectAllBtn">Unselect all</button>
+          <span class="msg" id="selCount" style="color:var(--text-dim);">0 selected</span>` : ''}
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div>
       </div>
@@ -787,13 +863,21 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
     if(filterMin){ filterMin.oninput = applyStockFilter; filterMax.oninput = applyStockFilter; }
     const filterClearBtn = document.getElementById('filterClearBtn');
     if(filterClearBtn) filterClearBtn.onclick = () => { filterMin.value = ''; filterMax.value = ''; applyStockFilter(); };
+    function updateSelCount(){
+      const n = document.querySelectorAll('tr[data-zsku] .rowCheck:checked').length;
+      const el = document.getElementById('selCount');
+      if(el) el.textContent = `${n} selected`;
+    }
     function setAllChecks(checked){
       document.querySelectorAll('tr[data-zsku]').forEach(tr => {
         if(tr.style.display !== 'none') tr.querySelector('.rowCheck').checked = checked;
       });
       const selectAll = document.getElementById('selectAllCheck');
       if(selectAll) selectAll.checked = checked;
+      updateSelCount();
     }
+    document.querySelectorAll('.rowCheck').forEach(cb => cb.onchange = updateSelCount);
+    updateSelCount();
     const selectAllCheck = document.getElementById('selectAllCheck');
     if(selectAllCheck) selectAllCheck.onchange = () => setAllChecks(selectAllCheck.checked);
     const selectAllBtn = document.getElementById('selectAllBtn');
