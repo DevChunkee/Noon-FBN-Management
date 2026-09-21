@@ -674,29 +674,27 @@ async function renderReceipt(){
       return;
     }
 
-    // Received qty defaults to whatever's still outstanding against the
-    // confirmed qty (confirmed - already received, floored at 0) — the
-    // common case is receiving the full confirmed amount in one go, so
-    // staff only need to edit this down for a partial delivery.
-    const rowsHtml = lines.map(l => {
-      const remaining = Math.max(0, Number(l.ConfirmedQty||0) - Number(l.QtyReceived||0));
-      return `
+    // Received qty defaults to the full Confirmed qty from the PO line — the
+    // common case is receiving exactly what was confirmed, so staff only
+    // need to edit this down for a partial/short delivery.
+    const rowsHtml = lines.map(l => `
       <div class="line-row" data-zsku="${l.zSKU}" data-linenum="${l.LineNum}">
         <div class="line-top">
           <div><div class="line-sku">${l.SKU}</div></div>
           <div class="line-planned">confirmed: ${fmt(l.ConfirmedQty)} · received so far: ${fmt(l.QtyReceived)}</div>
         </div>
         <div class="line-fields">
-          <input type="number" class="receiveInput" min="0" value="${remaining}" placeholder="Qty now">
+          <input type="number" class="receiveInput" min="0" value="${fmt(l.ConfirmedQty)}" placeholder="Qty now">
+          <button class="btn confirmLineBtn" type="button">Confirm</button>
         </div>
-      </div>`;
-    }).join('');
+      </div>`).join('');
 
     setPanel(`
       <div class="scan-bar">
         <input type="text" id="scanInput" placeholder="Scan or type a barcode, then Enter">
         <button class="btn" id="scanCamBtn">📷</button>
       </div>
+      <div class="line-planned" id="confirmProgress" style="padding:10px 16px 0;"></div>
       ${rowsHtml}
       <div style="padding:16px;display:flex;flex-direction:column;gap:10px;">
         <button class="btn full" id="receivedBtn">Received</button>
@@ -705,6 +703,26 @@ async function renderReceipt(){
       </div>
     `);
 
+    // "Confirm" just hides a checked-off row from view — it does NOT save
+    // anything. The row (and its qty value) stays in the DOM so Received /
+    // Received and Validate still pick it up; if the user navigates away,
+    // refreshes, or closes the browser before pressing one of those buttons,
+    // nothing was ever written and the confirm has no lasting effect.
+    const totalLines = document.querySelectorAll('.line-row').length;
+    const updateConfirmProgress = () => {
+      const confirmedCount = document.querySelectorAll('.line-row.confirmed-hidden').length;
+      const p = document.getElementById('confirmProgress');
+      if(p) p.textContent = `${confirmedCount} of ${totalLines} confirmed`;
+    };
+    document.querySelectorAll('.confirmLineBtn').forEach(btn => {
+      btn.onclick = () => {
+        btn.closest('.line-row').classList.add('confirmed-hidden');
+        btn.closest('.line-row').style.display = 'none';
+        updateConfirmProgress();
+      };
+    });
+    updateConfirmProgress();
+
     const scanInput = document.getElementById('scanInput');
     const handleScan = (code) => {
       const z = resolveZsku(code, catalog);
@@ -712,11 +730,14 @@ async function renderReceipt(){
       if(!z){ scanInput.value = ''; alert('No catalog match for: ' + code); return; }
       const row = document.querySelector(`.line-row[data-zsku="${z}"]`);
       if(!row){ scanInput.value = ''; alert('That SKU is not on this order.'); return; }
+      row.classList.remove('confirmed-hidden');
+      row.style.display = '';
       row.classList.add('highlight');
       row.scrollIntoView({ behavior:'smooth', block:'center' });
       const inp = row.querySelector('.receiveInput');
       inp.focus(); inp.select();
       scanInput.value = '';
+      updateConfirmProgress();
     };
     scanInput.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); handleScan(scanInput.value.trim()); } };
     document.getElementById('scanCamBtn').onclick = () => openScanModal(handleScan);
