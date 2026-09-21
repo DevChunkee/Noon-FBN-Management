@@ -2001,13 +2001,19 @@ async function renderPurchaseOrderDetail(){
     const qtyEditableStage = isOpen;           // Qty ordered only editable in the Open (draft) stage
     const confirmedEditableStage = isRFQ;      // Confirmed qty only editable in the RFQ stage
     const qtyReceivedEditableStage = isPO;     // Qty received only editable in the Purchase Order stage
+    const showConfirmedCol = !isOpen;          // Confirmed qty column hidden until RFQ (and beyond)
+    const showReceivedCol = isPO || isReceived || isValidated; // Qty received column hidden until Purchase Order (and beyond)
     const quotationEditableStage = isRFQ;      // Quotation number only editable in the RFQ stage, required to Confirm Quotation
     const invoiceEditableStage = isPO || isReceived; // Invoice number editable from Purchase Order onward, required to Validate
     const poNumberEditableStage = isOpen;      // PO number only editable in the Open (draft) stage
     const enrichedLines = myLines.map(l => {
       const isConfirmed = l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined;
       const confirmedVal = isConfirmed ? Number(l.ConfirmedQty) : Number(l.QtyOrdered||0);
-      return Object.assign({}, l, { _confirmedVal: confirmedVal, _isConfirmed: isConfirmed });
+      // Qty received defaults to Confirmed qty until an actual received
+      // amount has been entered (the DB column defaults to 0, so anything
+      // still at 0 reads as "not yet counted" and shows the confirmed qty).
+      const receivedVal = Number(l.QtyReceived||0) > 0 ? Number(l.QtyReceived) : confirmedVal;
+      return Object.assign({}, l, { _confirmedVal: confirmedVal, _isConfirmed: isConfirmed, _receivedVal: receivedVal });
     });
     const rowsHtml = enrichedLines.map(l => {
       const orderedCell = qtyEditableStage
@@ -2016,17 +2022,16 @@ async function renderPurchaseOrderDetail(){
       const confirmedCell = confirmedEditableStage
         ? `<input type="number" class="confirmQtyInput" min="0" value="${l._confirmedVal}" data-original="${l._confirmedVal}" style="width:80px;text-align:center;">`
         : fmt(l._confirmedVal);
-      const receivedVal = Number(l.QtyReceived||0);
       const receivedCell = qtyReceivedEditableStage
-        ? `<input type="number" class="qtyReceivedInput" min="0" value="${receivedVal}" data-original="${receivedVal}" style="width:80px;text-align:center;">`
-        : fmt(l.QtyReceived);
+        ? `<input type="number" class="qtyReceivedInput" min="0" value="${l._receivedVal}" data-original="${l._receivedVal}" style="width:80px;text-align:center;">`
+        : fmt(l._receivedVal);
       return `
       <tr data-linenum="${l.LineNum}">
         <td class="sku">${l.SKU}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td>
         <td class="num">${orderedCell}</td>
         <td class="num">${fmt(l.UnitCost)}</td><td class="num">${fmt(l.LineTotal)}</td>
-        <td class="num">${confirmedCell}</td>
-        <td class="num">${receivedCell}</td>
+        ${showConfirmedCol ? `<td class="num">${confirmedCell}</td>` : ''}
+        ${showReceivedCol ? `<td class="num">${receivedCell}</td>` : ''}
         <td>${structLocked ? '' : `<button type="button" class="btn deleteLineBtn" data-linenum="${l.LineNum}" style="color:var(--red);" title="Delete this line">✕</button>`}</td>
       </tr>`;
     }).join('');
@@ -2035,8 +2040,8 @@ async function renderPurchaseOrderDetail(){
     const totalOrderedValue = enrichedLines.reduce((s,l) => s + Number(l.LineTotal||0), 0);
     const totalConfirmedQty = enrichedLines.reduce((s,l) => s + Number(l._confirmedVal||0), 0);
     const totalConfirmedValue = enrichedLines.reduce((s,l) => s + Number(l._confirmedVal||0) * Number(l.UnitCost||0), 0);
-    const totalReceivedQty = enrichedLines.reduce((s,l) => s + Number(l.QtyReceived||0), 0);
-    const totalReceivedValue = enrichedLines.reduce((s,l) => s + Number(l.QtyReceived||0) * Number(l.UnitCost||0), 0);
+    const totalReceivedQty = enrichedLines.reduce((s,l) => s + Number(l._receivedVal||0), 0);
+    const totalReceivedValue = enrichedLines.reduce((s,l) => s + Number(l._receivedVal||0) * Number(l.UnitCost||0), 0);
 
     // Every status-change button on the header just tells setPOStatus which
     // status to jump to and what confirm() text to show — one handler for
@@ -2166,17 +2171,17 @@ async function renderPurchaseOrderDetail(){
           ${myLines.length && (qtyEditableStage || confirmedEditableStage || qtyReceivedEditableStage) ? `<button class="btn" id="cancelLineEditsBtn" style="display:none;">Cancel</button>
           <button class="btn primary" id="saveConfirmedBtn" style="display:none;">Save changes</button>` : ''}
         </div></div>
-      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Qty ordered</th><th class="num">Unit cost</th><th class="num">Line total</th><th class="num">Confirmed qty</th><th class="num">Qty received</th><th></th></tr></thead>
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Qty ordered</th><th class="num">Unit cost</th><th class="num">Line total</th>${showConfirmedCol ? '<th class="num">Confirmed qty</th>' : ''}${showReceivedCol ? '<th class="num">Qty received</th>' : ''}<th></th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
         <div class="batch-bar" style="flex-wrap:wrap;border-top:1px solid var(--border);font-weight:600;">
           <label>Total qty ordered</label><span>${fmt(totalQtyOrdered)}</span>
           <label>Value</label><span>${fmt(totalOrderedValue)}</span>
-          <span style="color:var(--text-faint);font-weight:400;">|</span>
+          ${showConfirmedCol ? `<span style="color:var(--text-faint);font-weight:400;">|</span>
           <label>Total confirmed qty</label><span>${fmt(totalConfirmedQty)}</span>
-          <label>Value</label><span>${fmt(totalConfirmedValue)}</span>
-          <span style="color:var(--text-faint);font-weight:400;">|</span>
+          <label>Value</label><span>${fmt(totalConfirmedValue)}</span>` : ''}
+          ${showReceivedCol ? `<span style="color:var(--text-faint);font-weight:400;">|</span>
           <label>Total qty received</label><span>${fmt(totalReceivedQty)}</span>
-          <label>Value</label><span>${fmt(totalReceivedValue)}</span>
+          <label>Value</label><span>${fmt(totalReceivedValue)}</span>` : ''}
         </div>
         <div class="empty" style="text-align:left;padding:10px 16px;">${isOpen ? 'Qty ordered is editable while this PO is Open. Click "Confirm Order" once it\'s ready to send as an RFQ — Qty ordered then locks.' : isRFQ ? 'Confirmed qty is editable while this PO is an RFQ — it defaults to Qty Ordered, edit if the supplier\'s quotation differs, then Save. Click "Confirm Quotation" once confirmed — Confirmed qty then locks.' : isPO ? 'Qty received is editable while this PO is in the Purchase Order stage — edit it as shipments arrive, then Save (this also updates the Warehouse module\'s receiving ledger).' : 'This order is closed — no further edits.'}</div>`
         : emptyState('No items yet — add one below or import a file.')}`;
