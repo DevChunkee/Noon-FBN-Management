@@ -398,6 +398,14 @@ async function apiPost(action, payload){
       const { error } = await client.from('purchase_order_lines').update({ confirmed_qty: Number(payload.confirmedQty) }).eq('po_number', payload.poNumber).eq('line_num', Number(payload.lineNum));
       if(error) throw new Error(error.message); result = { ok:true }; break;
     }
+    case 'deletePurchaseOrderLine': {
+      const { data: existing, error: selErr } = await client.from('purchase_order_lines').select('qty_received')
+        .eq('po_number', payload.poNumber).eq('line_num', Number(payload.lineNum)).single();
+      if(selErr) throw new Error(selErr.message);
+      if(existing && Number(existing.qty_received) > 0) throw new Error('This line already has received qty — log an adjustment instead of deleting it.');
+      const { error } = await client.from('purchase_order_lines').delete().eq('po_number', payload.poNumber).eq('line_num', Number(payload.lineNum));
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
     case 'updatePickingConfirmation': {
       const { error } = await client.from('sales_order_lines').update({ confirmed_qty: Number(payload.confirmedQty), shortage_reason: payload.shortageReason || null }).eq('so_number', payload.soNumber).eq('line_num', Number(payload.lineNum));
       if(error) throw new Error(error.message); result = { ok:true }; break;
@@ -1818,15 +1826,25 @@ async function renderPurchaseOrderDetail(){
     const header = orders.find(o => o.PONumber === poNumber);
     const myLines = lines.filter(l => l.PONumber === poNumber);
     const isCancelled = header && header.Status === 'Cancelled';
-    const rowsHtml = myLines.map((l,i) => {
-      const confirmedVal = (l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined) ? l.ConfirmedQty : l.QtyOrdered;
-      return `
+    const enrichedLines = myLines.map(l => {
+      const confirmedVal = (l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined) ? Number(l.ConfirmedQty) : Number(l.QtyOrdered||0);
+      return Object.assign({}, l, { _confirmedVal: confirmedVal });
+    });
+    const rowsHtml = enrichedLines.map(l => `
       <tr data-linenum="${l.LineNum}">
         <td class="sku">${l.SKU}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td><td class="num">${fmt(l.QtyOrdered)}</td>
         <td class="num">${fmt(l.UnitCost)}</td><td class="num">${fmt(l.LineTotal)}</td>
-        <td class="num"><input type="number" class="confirmQtyInput" min="0" value="${confirmedVal}" style="width:80px;text-align:right;" ${isCancelled?'disabled':''}></td>
-        <td class="num">${fmt(l.QtyReceived)}</td></tr>`;
-    }).join('');
+        <td class="num"><input type="number" class="confirmQtyInput" min="0" value="${l._confirmedVal}" style="width:80px;text-align:right;" ${isCancelled?'disabled':''}></td>
+        <td class="num">${fmt(l.QtyReceived)}</td>
+        <td>${isCancelled ? '' : `<button type="button" class="btn deleteLineBtn" data-linenum="${l.LineNum}" style="color:var(--red);" title="Delete this line">✕</button>`}</td>
+      </tr>`).join('');
+
+    const totalQtyOrdered = enrichedLines.reduce((s,l) => s + Number(l.QtyOrdered||0), 0);
+    const totalOrderedValue = enrichedLines.reduce((s,l) => s + Number(l.LineTotal||0), 0);
+    const totalConfirmedQty = enrichedLines.reduce((s,l) => s + Number(l._confirmedVal||0), 0);
+    const totalConfirmedValue = enrichedLines.reduce((s,l) => s + Number(l._confirmedVal||0) * Number(l.UnitCost||0), 0);
+    const totalReceivedQty = enrichedLines.reduce((s,l) => s + Number(l.QtyReceived||0), 0);
+    const totalReceivedValue = enrichedLines.reduce((s,l) => s + Number(l.QtyReceived||0) * Number(l.UnitCost||0), 0);
 
     setPanel(`
       <div class="panel-head"><h3>Order summary</h3>
@@ -1851,8 +1869,18 @@ async function renderPurchaseOrderDetail(){
           ${myLines.length ? exportBtnHtml('poExportBtn','Export lines') : ''}
           ${myLines.length && !isCancelled ? `<button class="btn" id="saveConfirmedBtn">Save confirmed qty</button>` : ''}
         </div></div>
-      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Qty ordered</th><th class="num">Unit cost</th><th class="num">Line total</th><th class="num">Confirmed qty</th><th class="num">Qty received</th></tr></thead>
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Qty ordered</th><th class="num">Unit cost</th><th class="num">Line total</th><th class="num">Confirmed qty</th><th class="num">Qty received</th><th></th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
+        <div class="batch-bar" style="flex-wrap:wrap;">
+          <label>Total qty ordered</label><span>${fmt(totalQtyOrdered)}</span>
+          <label>Value</label><span>${fmt(totalOrderedValue)}</span>
+          <span style="color:var(--text-faint);">|</span>
+          <label>Total confirmed qty</label><span>${fmt(totalConfirmedQty)}</span>
+          <label>Value</label><span>${fmt(totalConfirmedValue)}</span>
+          <span style="color:var(--text-faint);">|</span>
+          <label>Total qty received</label><span>${fmt(totalReceivedQty)}</span>
+          <label>Value</label><span>${fmt(totalReceivedValue)}</span>
+        </div>
         <div class="empty" style="text-align:left;padding:10px 16px;">Confirmed qty defaults to Qty Ordered — edit once your supplier commits to a different amount, then Save. Qty Received is filled in from the Warehouse module's Receipt screen.</div>`
         : emptyState('No items yet — add one below or import a file.')}`;
     document.getElementById('main').appendChild(linesPanel);
@@ -1871,6 +1899,17 @@ async function renderPurchaseOrderDetail(){
         renderPurchaseOrderDetail();
       }catch(e){ alert('Could not save: ' + e.message); saveBtn.disabled = false; saveBtn.textContent = 'Save confirmed qty'; }
     };
+    document.querySelectorAll('.deleteLineBtn').forEach(btn => {
+      btn.onclick = async () => {
+        const lineNum = btn.dataset.linenum;
+        if(!confirm('Delete this line item? This can\'t be undone.')) return;
+        btn.disabled = true;
+        try{
+          await apiPost('deletePurchaseOrderLine', { poNumber, lineNum });
+          renderPurchaseOrderDetail();
+        }catch(e){ alert(e.message); btn.disabled = false; }
+      };
+    });
 
     if(isCancelled){ return; }
 
