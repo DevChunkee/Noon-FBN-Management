@@ -386,7 +386,10 @@ async function apiPost(action, payload){
       if(poErr) throw new Error(poErr.message);
       if(po && po.status !== 'RFQ') throw new Error('Quotation number is only editable while this PO is in the RFQ stage.');
       const { error } = await client.from('purchase_orders').update({ quotation_number: payload.value || null }).eq('po_number', payload.poNumber);
-      if(error) throw new Error(error.message); result = { ok:true }; break;
+      if(error) throw new Error(error.code === '42703'
+        ? 'The database doesn\'t have a quotation_number column yet — run migration 11_po_quotation_invoice.sql in Supabase, then try again.'
+        : error.message);
+      result = { ok:true }; break;
     }
     case 'updatePOInvoiceNumber': {
       const { data: po, error: poErr } = await client.from('purchase_orders').select('status')
@@ -394,7 +397,10 @@ async function apiPost(action, payload){
       if(poErr) throw new Error(poErr.message);
       if(po && !['Purchase Order','Received'].includes(po.status)) throw new Error('Invoice number is only editable while this PO is in the Purchase Order or Received stage.');
       const { error } = await client.from('purchase_orders').update({ invoice_number: payload.value || null }).eq('po_number', payload.poNumber);
-      if(error) throw new Error(error.message); result = { ok:true }; break;
+      if(error) throw new Error(error.code === '42703'
+        ? 'The database doesn\'t have an invoice_number column yet — run migration 11_po_quotation_invoice.sql in Supabase, then try again.'
+        : error.message);
+      result = { ok:true }; break;
     }
     case 'cancelSalesOrder': {
       const { error } = await client.from('sales_orders').update({ cancelled: true }).eq('so_number', payload.soNumber);
@@ -2152,13 +2158,23 @@ async function renderPurchaseOrderDetail(){
         }
         if(!confirm(a.confirmMsg)) return;
         btn.disabled = true;
+        let savedRequiredField = false;
         try{
           if(reqInput && a.requireAction && reqInput.value.trim() !== reqInput.dataset.original){
             await apiPost(a.requireAction, { poNumber, value: reqInput.value.trim() });
+            savedRequiredField = true;
           }
           await apiPost('setPOStatus', { poNumber, status: a.to }); renderPurchaseOrderDetail();
         }
-        catch(e){ alert(e.message); btn.disabled = false; }
+        catch(e){
+          alert(e.message);
+          btn.disabled = false;
+          // The field (Quotation #/Invoice #) may have saved successfully even
+          // though the status change itself then failed (e.g. a status
+          // migration hasn't been run yet) — re-render so that save shows up
+          // instead of looking like nothing happened.
+          if(savedRequiredField) renderPurchaseOrderDetail();
+        }
       };
     });
 
