@@ -666,6 +666,46 @@ function barcodeItemLabel(zsku, catalog){
   return c.Barcode ? `[${c.Barcode}] - ${c.ItemName||''}` : (c.ItemName||'');
 }
 
+// Mirrors v_master_catalog's margin math (01_schema.sql):
+//   referral_fee = price * settings.referral_fee_pct
+//   landed_cost  = cost + referral_fee + outbound_fee + storage_cost
+//   net_margin   = price - landed_cost
+//   margin_pct   = net_margin / price
+function computeMargin(cost, price, outboundFee, storageCost, referralFeePct){
+  price = Number(price)||0;
+  cost = Number(cost)||0;
+  outboundFee = Number(outboundFee)||0;
+  storageCost = Number(storageCost)||0;
+  referralFeePct = Number(referralFeePct)||0;
+  if(price <= 0) return null;
+  const referralFee = price * referralFeePct;
+  const landedCost = cost + referralFee + outboundFee + storageCost;
+  const netMargin = price - landedCost;
+  return { netMargin, marginPct: netMargin / price };
+}
+// Wires live recalculation of a form's "Margin" display field whenever
+// cost/price/outboundFee/storageCost change. formEl must contain inputs
+// named cost, price, outboundFee, storageCost and an element with id
+// marginFieldId to write the result into.
+function wireMarginCalc(formEl, marginFieldId, referralFeePct, lowMarginThreshold){
+  const out = document.getElementById(marginFieldId);
+  if(!out) return;
+  const inputs = ['cost','price','outboundFee','storageCost'].map(n => formEl.elements[n]).filter(Boolean);
+  function recalc(){
+    const cost = formEl.elements['cost'] ? formEl.elements['cost'].value : 0;
+    const price = formEl.elements['price'] ? formEl.elements['price'].value : 0;
+    const outboundFee = formEl.elements['outboundFee'] ? formEl.elements['outboundFee'].value : 0;
+    const storageCost = formEl.elements['storageCost'] ? formEl.elements['storageCost'].value : 0;
+    const m = computeMargin(cost, price, outboundFee, storageCost, referralFeePct);
+    if(!m){ out.textContent = '—'; out.style.color = ''; return; }
+    const pct = m.marginPct * 100;
+    out.textContent = `${fmt(pct)}%  (net ${fmt(m.netMargin)})`;
+    out.style.color = m.marginPct < lowMarginThreshold ? 'var(--red)' : (m.marginPct <= 0 ? 'var(--red)' : 'var(--green)');
+  }
+  inputs.forEach(inp => inp.addEventListener('input', recalc));
+  recalc();
+}
+
 // Exports an array of row-objects as a downloadable .xlsx file, triggered
 // via a temporary object URL — works the same for a full table or a filtered
 // subset (e.g. one order's lines).
@@ -1028,6 +1068,9 @@ function closeModalOverlay(id){
 
 async function openCatalogAddModal(){
   const supplierNames = activeSupplierNames(await ensureSuppliers());
+  const settings = await getSettings().catch(() => ({}));
+  const referralFeePct = Number(settings.referral_fee_pct||0.15);
+  const lowMarginThreshold = Number(settings.low_margin_threshold||0);
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'catalogAddOverlay';
@@ -1046,6 +1089,7 @@ async function openCatalogAddModal(){
         <div class="field"><label>Price</label><input type="number" name="price" step="0.01" min="0" required></div>
         <div class="field"><label>Outbound fee</label><input type="number" name="outboundFee" step="0.01" min="0"></div>
         <div class="field"><label>Storage cost (monthly)</label><input type="number" name="storageCost" step="0.01" min="0"></div>
+        <div class="field"><label>Margin</label><div id="catalogAddMarginField" style="padding:9px 10px;font-family:var(--mono);font-weight:600;">—</div></div>
         <div class="form-foot">
           <button class="btn primary" type="submit">Add SKU</button>
           <button class="btn" type="button" id="catalogAddCancelBtn">Cancel</button>
@@ -1057,6 +1101,7 @@ async function openCatalogAddModal(){
   overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('catalogAddOverlay'); };
   document.getElementById('catalogAddCancelBtn').onclick = () => closeModalOverlay('catalogAddOverlay');
   const catalogForm = document.getElementById('catalogForm');
+  wireMarginCalc(catalogForm, 'catalogAddMarginField', referralFeePct, lowMarginThreshold);
   const supplierField = wireSupplierField(catalogForm, supplierNames);
   catalogForm.onsubmit = async (ev) => {
     ev.preventDefault();
@@ -1151,6 +1196,9 @@ async function openCatalogEditModal(zsku){
   const c = state.catalog.find(x => x.zSKU === zsku);
   if(!c) return;
   const supplierNames = activeSupplierNames(await ensureSuppliers());
+  const settings = await getSettings().catch(() => ({}));
+  const referralFeePct = Number(settings.referral_fee_pct||0.15);
+  const lowMarginThreshold = Number(settings.low_margin_threshold||0);
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'catalogEditOverlay';
@@ -1169,6 +1217,7 @@ async function openCatalogEditModal(zsku){
         <div class="field"><label>Price</label><input type="number" name="price" step="0.01" min="0" value="${c.Price||0}" required></div>
         <div class="field"><label>Outbound fee</label><input type="number" name="outboundFee" step="0.01" min="0" value="${c.OutboundFee||0}"></div>
         <div class="field"><label>Storage cost (monthly)</label><input type="number" name="storageCost" step="0.01" min="0" value="${c.StorageCost||0}"></div>
+        <div class="field"><label>Margin</label><div id="catalogEditMarginField" style="padding:9px 10px;font-family:var(--mono);font-weight:600;">—</div></div>
         <div class="field"><label>Status</label>
           <select name="status">
             <option ${c.Status==='Active'?'selected':''}>Active</option>
@@ -1186,6 +1235,7 @@ async function openCatalogEditModal(zsku){
   overlay.onclick = (e) => { if(e.target === overlay) closeCatalogEditModal(); };
   document.getElementById('catalogEditCancelBtn').onclick = closeCatalogEditModal;
   const catalogEditForm = document.getElementById('catalogEditForm');
+  wireMarginCalc(catalogEditForm, 'catalogEditMarginField', referralFeePct, lowMarginThreshold);
   const supplierField = wireSupplierField(catalogEditForm, supplierNames);
   catalogEditForm.onsubmit = async (ev) => {
     ev.preventDefault();
