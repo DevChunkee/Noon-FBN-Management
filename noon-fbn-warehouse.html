@@ -593,15 +593,32 @@ async function renderReceiptPicker(){
     // dashboard. Earlier stages (Open/RFQ) are still "waiting" on the office
     // side; later stages (Received/Validated/Cancelled) are already done.
     const eligible = orders.filter(o => o.Status === 'Purchase Order');
-    const cardsHtml = eligible.length ? eligible.slice().reverse().map(o => `
-      <div class="order-card" data-po="${o.PONumber}">
-        <div><div class="id">${o.PONumber}</div><div class="meta">${o.Supplier||''} · received ${fmt(o.TotalReceivedQty)}/${fmt(o.TotalConfirmedQty)}</div></div>
-        <span class="chip amber">Pending</span>
-      </div>`).join('') : '';
-    setPanel(cardsHtml || emptyState('Nothing pending — no purchase orders are ready to receive right now.'));
-    document.querySelectorAll('.order-card[data-po]').forEach(card => {
-      card.onclick = () => { state.selectedPO = card.dataset.po; renderReceipt(); };
-    });
+
+    setPanel(`
+      <div class="scan-bar"><input type="text" id="receiptSearchInput" placeholder="Search by quotation number"></div>
+      <div id="receiptCards"></div>
+    `);
+
+    const renderCards = (list) => {
+      const cardsHtml = list.length ? list.slice().reverse().map(o => `
+        <div class="order-card" data-po="${o.PONumber}">
+          <div><div class="id">${o.QuotationNumber || o.PONumber}</div><div class="meta">${o.Supplier||''} · PO ${o.PONumber} · received ${fmt(o.TotalReceivedQty)}/${fmt(o.TotalConfirmedQty)}</div></div>
+          <span class="chip amber">Pending</span>
+        </div>`).join('') : '';
+      const holder = document.getElementById('receiptCards');
+      if(holder) holder.innerHTML = cardsHtml || emptyState('Nothing pending — no purchase orders are ready to receive right now.');
+      document.querySelectorAll('.order-card[data-po]').forEach(card => {
+        card.onclick = () => { state.selectedPO = card.dataset.po; renderReceipt(); };
+      });
+    };
+    renderCards(eligible);
+
+    const searchInput = document.getElementById('receiptSearchInput');
+    searchInput.oninput = () => {
+      const q = searchInput.value.trim().toLowerCase();
+      const filtered = q ? eligible.filter(o => (o.QuotationNumber||'').toLowerCase().includes(q)) : eligible;
+      renderCards(filtered);
+    };
   }catch(e){ setPanel(errorState(e)); }
 }
 
@@ -657,16 +674,23 @@ async function renderReceipt(){
       return;
     }
 
-    const rowsHtml = lines.map(l => `
+    // Received qty defaults to whatever's still outstanding against the
+    // confirmed qty (confirmed - already received, floored at 0) — the
+    // common case is receiving the full confirmed amount in one go, so
+    // staff only need to edit this down for a partial delivery.
+    const rowsHtml = lines.map(l => {
+      const remaining = Math.max(0, Number(l.ConfirmedQty||0) - Number(l.QtyReceived||0));
+      return `
       <div class="line-row" data-zsku="${l.zSKU}" data-linenum="${l.LineNum}">
         <div class="line-top">
           <div><div class="line-sku">${l.SKU}</div></div>
           <div class="line-planned">confirmed: ${fmt(l.ConfirmedQty)} · received so far: ${fmt(l.QtyReceived)}</div>
         </div>
         <div class="line-fields">
-          <input type="number" class="receiveInput" min="0" value="0" placeholder="Qty now">
+          <input type="number" class="receiveInput" min="0" value="${remaining}" placeholder="Qty now">
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
 
     setPanel(`
       <div class="scan-bar">
