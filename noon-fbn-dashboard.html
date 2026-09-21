@@ -1871,13 +1871,13 @@ async function renderPurchaseOrderDetail(){
         </div></div>
       ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Qty ordered</th><th class="num">Unit cost</th><th class="num">Line total</th><th class="num">Confirmed qty</th><th class="num">Qty received</th><th></th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
-        <div class="batch-bar" style="flex-wrap:wrap;">
+        <div class="batch-bar" style="flex-wrap:wrap;border-top:1px solid var(--border);font-weight:600;">
           <label>Total qty ordered</label><span>${fmt(totalQtyOrdered)}</span>
           <label>Value</label><span>${fmt(totalOrderedValue)}</span>
-          <span style="color:var(--text-faint);">|</span>
+          <span style="color:var(--text-faint);font-weight:400;">|</span>
           <label>Total confirmed qty</label><span>${fmt(totalConfirmedQty)}</span>
           <label>Value</label><span>${fmt(totalConfirmedValue)}</span>
-          <span style="color:var(--text-faint);">|</span>
+          <span style="color:var(--text-faint);font-weight:400;">|</span>
           <label>Total qty received</label><span>${fmt(totalReceivedQty)}</span>
           <label>Value</label><span>${fmt(totalReceivedValue)}</span>
         </div>
