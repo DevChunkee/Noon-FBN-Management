@@ -405,14 +405,18 @@ async function apiPost(action, payload){
       if(error) throw new Error(error.message); result = { added: data.added, skippedCount: data.skipped }; break;
     }
     case 'updatePOConfirmation': {
+      const { data: po, error: poErr } = await client.from('purchase_orders').select('status')
+        .eq('po_number', payload.poNumber).single();
+      if(poErr) throw new Error(poErr.message);
+      if(po && po.status !== 'RFQ') throw new Error('Confirmed qty is only editable while this PO is in the RFQ stage.');
       const { error } = await client.from('purchase_order_lines').update({ confirmed_qty: Number(payload.confirmedQty) }).eq('po_number', payload.poNumber).eq('line_num', Number(payload.lineNum));
       if(error) throw new Error(error.message); result = { ok:true }; break;
     }
     case 'updatePOLineQty': {
-      const { data: existing, error: selErr } = await client.from('purchase_order_lines').select('confirmed_qty')
-        .eq('po_number', payload.poNumber).eq('line_num', Number(payload.lineNum)).single();
-      if(selErr) throw new Error(selErr.message);
-      if(existing && existing.confirmed_qty !== null) throw new Error('Qty ordered is locked once Confirmed qty is set for this line.');
+      const { data: po, error: poErr } = await client.from('purchase_orders').select('status')
+        .eq('po_number', payload.poNumber).single();
+      if(poErr) throw new Error(poErr.message);
+      if(po && po.status !== 'Open') throw new Error('Qty ordered is only editable while this PO is in the Open stage.');
       const { error } = await client.from('purchase_order_lines').update({ qty_ordered: Number(payload.qtyOrdered) }).eq('po_number', payload.poNumber).eq('line_num', Number(payload.lineNum));
       if(error) throw new Error(error.message); result = { ok:true }; break;
     }
@@ -1858,8 +1862,9 @@ async function renderPurchaseOrderDetail(){
     const isValidated = !isCancelled && status === 'Validated';
     const canCancel = isOpen || isRFQ || isPO; // matches the DB guard: blocked once anything's received
     const structLocked = isCancelled || isReceived || isValidated; // no add/delete line items past this point
-    const qtyEditableStage = isOpen;      // Qty ordered only editable in the Open (draft) stage
-    const confirmedEditableStage = isPO;  // Confirmed qty only editable in the Purchase Order stage
+    const qtyEditableStage = isOpen;           // Qty ordered only editable in the Open (draft) stage
+    const confirmedEditableStage = isRFQ;      // Confirmed qty only editable in the RFQ stage
+    const qtyReceivedEditableStage = isPO;     // Qty received only editable in the Purchase Order stage
     const enrichedLines = myLines.map(l => {
       const isConfirmed = l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined;
       const confirmedVal = isConfirmed ? Number(l.ConfirmedQty) : Number(l.QtyOrdered||0);
@@ -1867,15 +1872,19 @@ async function renderPurchaseOrderDetail(){
     });
     const rowsHtml = enrichedLines.map(l => {
       const confirmedCell = confirmedEditableStage
-        ? `<input type="number" class="confirmQtyInput" min="0" value="${l._confirmedVal}" data-original="${l._confirmedVal}" style="width:80px;text-align:right;">`
+        ? `<input type="number" class="confirmQtyInput" min="0" value="${l._confirmedVal}" data-original="${l._confirmedVal}" style="width:80px;text-align:center;">`
         : fmt(l._confirmedVal);
+      const receivedVal = Number(l.QtyReceived||0);
+      const receivedCell = qtyReceivedEditableStage
+        ? `<input type="number" class="qtyReceivedInput" min="0" value="${receivedVal}" data-original="${receivedVal}" style="width:80px;text-align:center;">`
+        : fmt(l.QtyReceived);
       return `
       <tr data-linenum="${l.LineNum}">
         <td class="sku">${l.SKU}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td>
         <td class="num"><input type="number" class="qtyOrderedInput" min="1" value="${l.QtyOrdered}" data-original="${l.QtyOrdered}" style="width:80px;text-align:center;" ${qtyEditableStage?'':'disabled'} title="${qtyEditableStage ? '' : 'Editable only while this PO is in the Open stage'}"></td>
         <td class="num">${fmt(l.UnitCost)}</td><td class="num">${fmt(l.LineTotal)}</td>
         <td class="num">${confirmedCell}</td>
-        <td class="num">${fmt(l.QtyReceived)}</td>
+        <td class="num">${receivedCell}</td>
         <td>${structLocked ? '' : `<button type="button" class="btn deleteLineBtn" data-linenum="${l.LineNum}" style="color:var(--red);" title="Delete this line">✕</button>`}</td>
       </tr>`;
     }).join('');
@@ -1946,7 +1955,7 @@ async function renderPurchaseOrderDetail(){
       <div class="panel-head"><h3>${myLines.length} line item(s)</h3>
         <div style="display:flex;gap:8px;">
           ${myLines.length ? exportBtnHtml('poExportBtn','Export lines') : ''}
-          ${myLines.length && (qtyEditableStage || confirmedEditableStage) ? `<button class="btn" id="cancelLineEditsBtn" style="display:none;">Cancel</button>
+          ${myLines.length && (qtyEditableStage || confirmedEditableStage || qtyReceivedEditableStage) ? `<button class="btn" id="cancelLineEditsBtn" style="display:none;">Cancel</button>
           <button class="btn primary" id="saveConfirmedBtn" style="display:none;">Save changes</button>` : ''}
         </div></div>
       ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Qty ordered</th><th class="num">Unit cost</th><th class="num">Line total</th><th class="num">Confirmed qty</th><th class="num">Qty received</th><th></th></tr></thead>
@@ -1961,7 +1970,7 @@ async function renderPurchaseOrderDetail(){
           <label>Total qty received</label><span>${fmt(totalReceivedQty)}</span>
           <label>Value</label><span>${fmt(totalReceivedValue)}</span>
         </div>
-        <div class="empty" style="text-align:left;padding:10px 16px;">${isOpen ? 'Qty ordered is editable while this PO is Open. Click "Confirm Order" once it\'s ready to send as an RFQ — Qty ordered then locks.' : isRFQ ? 'Awaiting the supplier\'s quotation. Click "Confirm Quotation" once they commit — Confirmed qty then becomes editable.' : isPO ? 'Confirmed qty defaults to Qty Ordered — edit once your supplier\'s actual fulfillment differs, then Save. Qty Received is filled in from the Warehouse module\'s Receipt screen.' : 'This order is closed — no further edits.'}</div>`
+        <div class="empty" style="text-align:left;padding:10px 16px;">${isOpen ? 'Qty ordered is editable while this PO is Open. Click "Confirm Order" once it\'s ready to send as an RFQ — Qty ordered then locks.' : isRFQ ? 'Confirmed qty is editable while this PO is an RFQ — it defaults to Qty Ordered, edit if the supplier\'s quotation differs, then Save. Click "Confirm Quotation" once confirmed — Confirmed qty then locks.' : isPO ? 'Qty received is editable while this PO is in the Purchase Order stage — edit it as shipments arrive, then Save (this also updates the Warehouse module\'s receiving ledger).' : 'This order is closed — no further edits.'}</div>`
         : emptyState('No items yet — add one below or import a file.')}`;
     document.getElementById('main').appendChild(linesPanel);
     const poExportBtn = document.getElementById('poExportBtn');
@@ -1970,14 +1979,14 @@ async function renderPurchaseOrderDetail(){
     const cancelEditsBtn = document.getElementById('cancelLineEditsBtn');
     function checkLinesDirty(){
       if(!saveBtn) return;
-      const dirty = Array.from(document.querySelectorAll('.qtyOrderedInput, .confirmQtyInput'))
+      const dirty = Array.from(document.querySelectorAll('.qtyOrderedInput, .confirmQtyInput, .qtyReceivedInput'))
         .some(inp => !inp.disabled && inp.value !== inp.dataset.original);
       saveBtn.style.display = dirty ? '' : 'none';
       if(cancelEditsBtn) cancelEditsBtn.style.display = dirty ? '' : 'none';
     }
-    document.querySelectorAll('.qtyOrderedInput, .confirmQtyInput').forEach(inp => inp.addEventListener('input', checkLinesDirty));
+    document.querySelectorAll('.qtyOrderedInput, .confirmQtyInput, .qtyReceivedInput').forEach(inp => inp.addEventListener('input', checkLinesDirty));
     if(cancelEditsBtn) cancelEditsBtn.onclick = () => {
-      document.querySelectorAll('.qtyOrderedInput, .confirmQtyInput').forEach(inp => { inp.value = inp.dataset.original; });
+      document.querySelectorAll('.qtyOrderedInput, .confirmQtyInput, .qtyReceivedInput').forEach(inp => { inp.value = inp.dataset.original; });
       checkLinesDirty();
     };
     if(saveBtn) saveBtn.onclick = async () => {
@@ -1993,6 +2002,10 @@ async function renderPurchaseOrderDetail(){
           const confirmInput = tr.querySelector('.confirmQtyInput');
           if(confirmInput && !confirmInput.disabled && confirmInput.value !== confirmInput.dataset.original){
             await apiPost('updatePOConfirmation', { poNumber, lineNum, confirmedQty: confirmInput.value });
+          }
+          const receivedInput = tr.querySelector('.qtyReceivedInput');
+          if(receivedInput && !receivedInput.disabled && receivedInput.value !== receivedInput.dataset.original){
+            await apiPost('updateWarehouseReceipt', { poNumber, lineNum, receivedQty: receivedInput.value });
           }
         }
         renderPurchaseOrderDetail();
