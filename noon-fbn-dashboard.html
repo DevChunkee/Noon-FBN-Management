@@ -76,6 +76,8 @@
   .chip.amber{background:rgba(232,163,61,.15);color:var(--amber);}
   .chip.green{background:rgba(79,178,134,.15);color:var(--green);}
   .chip.red{background:rgba(217,115,110,.15);color:var(--red);}
+  .chip.blue{background:rgba(91,141,239,.15);color:var(--blue);}
+  .chip.gray{background:rgba(138,147,163,.15);color:var(--text-dim);}
 
   .empty{padding:40px 20px;text-align:center;color:var(--text-dim);font-size:13px;}
   .loading{padding:40px 20px;text-align:center;color:var(--text-faint);font-size:13px;font-family:var(--mono);}
@@ -265,7 +267,7 @@ const FIELD_MAPS = {
     qty_received:'QtyReceived', qty_damaged:'QtyDamaged', discrepancy:'Discrepancy', line_status:'LineStatus',
     confirmed_qty:'ConfirmedQty', shortage_reason:'ShortageReason', effective_qty:'EffectiveQty', so_cancelled:'SOCancelled' },
   purchaseOrder: { po_number:'PONumber', po_date:'PODate', supplier:'Supplier', expected_delivery:'ExpectedDelivery',
-    status:'Status', quotation_number:'QuotationNumber', invoice_number:'InvoiceNumber', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
+    status:'Status', quotation_number:'QuotationNumber', invoice_number:'InvoiceNumber', received_date:'ReceivedDate', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
     total_received_qty:'TotalReceivedQty' },
   purchaseOrderLine: { po_number:'PONumber', line_num:'LineNum', zsku:'zSKU', sku:'SKU', qty_ordered:'QtyOrdered',
     unit_cost:'UnitCost', line_total:'LineTotal', qty_received:'QtyReceived', confirmed_qty:'ConfirmedQty',
@@ -349,7 +351,15 @@ async function apiPost(action, payload){
     // (Open -> RFQ -> Purchase Order -> Received -> Validated), both the
     // "next stage" buttons and the "back to previous stage" buttons.
     case 'setPOStatus': {
-      const { error } = await client.from('purchase_orders').update({ status: payload.status }).eq('po_number', payload.poNumber);
+      const patch = { status: payload.status };
+      // Stamp Received date the first time this PO reaches Received (or
+      // jumps straight to Validated via "Received and Validate") — never
+      // overwritten once set, so moving back and forth doesn't lose it.
+      if(payload.status === 'Received' || payload.status === 'Validated'){
+        const { data: existing } = await client.from('purchase_orders').select('received_date').eq('po_number', payload.poNumber).single();
+        if(existing && !existing.received_date) patch.received_date = today();
+      }
+      const { error } = await client.from('purchase_orders').update(patch).eq('po_number', payload.poNumber);
       if(error) throw new Error(error.code === '23514'
         ? `The database doesn't allow status "${payload.status}" yet — run migration 10_po_status_open_validated.sql in Supabase, then try again.`
         : error.message);
@@ -660,6 +670,11 @@ function catalogLabel(zsku, catalog){
 // "[Barcode] - Item name" — used on SO/PO line item tables. The lines
 // themselves don't carry barcode/item name, so this looks them up from the
 // already-loaded catalog by zSKU. Falls back gracefully if either is missing.
+function poStatusChip(status){
+  const map = { Open:'gray', RFQ:'amber', 'Purchase Order':'blue', Received:'amber', Validated:'green', Cancelled:'red' };
+  const cls = map[status] || 'gray';
+  return `<span class="chip ${cls}">${status||''}</span>`;
+}
 function barcodeItemLabel(zsku, catalog){
   const c = catalog.find(x => x.zSKU === zsku);
   if(!c) return '';
@@ -1809,8 +1824,9 @@ async function renderPurchaseOrders(){
     const rows = await apiGet('purchaseOrder');
     const body = rows.length ? rows.slice().reverse().map(r => `
       <tr class="clickRow" data-po="${r.PONumber}">
-        <td class="sku">${r.PONumber}</td><td>${r.PODate||''}</td><td>${r.Supplier||''}</td>
-        <td class="num">${fmt(r.TotalUnits)}</td><td class="num">${fmt(r.TotalCost)}</td><td>${r.Status||''}</td>
+        <td class="sku">${r.PONumber}</td><td>${r.QuotationNumber||'—'}</td><td>${r.InvoiceNumber||'—'}</td>
+        <td>${r.PODate||''}</td><td>${r.ReceivedDate||'—'}</td><td>${r.Supplier||''}</td>
+        <td class="num">${fmt(r.TotalUnits)}</td><td class="num">${fmt(r.TotalCost)}</td><td>${poStatusChip(r.Status)}</td>
       </tr>`).join('') : '';
     setPanel(`
       <div class="panel-head"><h3>${rows.length} order${rows.length===1?'':'s'}</h3>
@@ -1819,7 +1835,7 @@ async function renderPurchaseOrders(){
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div></div>
       ${rows.length ? `<table>
-        <thead><tr><th>PO</th><th>Date</th><th>Supplier</th><th class="num">Units</th><th class="num">Cost</th><th>Status</th></tr></thead>
+        <thead><tr><th>PO</th><th>Quotation #</th><th>Invoice #</th><th>Date</th><th>Received date</th><th>Supplier</th><th class="num">Units</th><th class="num">Cost</th><th>Status</th></tr></thead>
         <tbody>${body}</tbody></table>` : emptyState('No purchase orders yet — click "Create new Purchase Order" above.')}
     `);
     document.querySelectorAll('tr.clickRow[data-po]').forEach(tr => {
