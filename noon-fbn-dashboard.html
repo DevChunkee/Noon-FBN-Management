@@ -1871,6 +1871,9 @@ async function renderPurchaseOrderDetail(){
       return Object.assign({}, l, { _confirmedVal: confirmedVal, _isConfirmed: isConfirmed });
     });
     const rowsHtml = enrichedLines.map(l => {
+      const orderedCell = qtyEditableStage
+        ? `<input type="number" class="qtyOrderedInput" min="1" value="${l.QtyOrdered}" data-original="${l.QtyOrdered}" style="width:80px;text-align:center;">`
+        : fmt(l.QtyOrdered);
       const confirmedCell = confirmedEditableStage
         ? `<input type="number" class="confirmQtyInput" min="0" value="${l._confirmedVal}" data-original="${l._confirmedVal}" style="width:80px;text-align:center;">`
         : fmt(l._confirmedVal);
@@ -1881,7 +1884,7 @@ async function renderPurchaseOrderDetail(){
       return `
       <tr data-linenum="${l.LineNum}">
         <td class="sku">${l.SKU}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td>
-        <td class="num"><input type="number" class="qtyOrderedInput" min="1" value="${l.QtyOrdered}" data-original="${l.QtyOrdered}" style="width:80px;text-align:center;" ${qtyEditableStage?'':'disabled'} title="${qtyEditableStage ? '' : 'Editable only while this PO is in the Open stage'}"></td>
+        <td class="num">${orderedCell}</td>
         <td class="num">${fmt(l.UnitCost)}</td><td class="num">${fmt(l.LineTotal)}</td>
         <td class="num">${confirmedCell}</td>
         <td class="num">${receivedCell}</td>
