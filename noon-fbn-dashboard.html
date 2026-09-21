@@ -763,6 +763,30 @@ function templateBtnHtml(id, label){
 }
 
 // ---------------- views ----------------
+// Remembers which screen (and, for Purchase/Sales Orders, which specific
+// order) is open so a browser refresh lands back where the user was
+// instead of bouncing to Master Catalog. sessionStorage (not localStorage)
+// is deliberate: it survives a refresh but clears itself once the tab/app
+// is actually closed, matching "as long as I didn't close the browser".
+const VIEW_STORAGE_KEY = 'noonFbnDashboardView';
+function persistView(){
+  try{
+    sessionStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify({
+      view: state.view, selectedPO: state.selectedPO, selectedSO: state.selectedSO
+    }));
+  }catch(e){ /* private-browsing / storage disabled — just skip persisting */ }
+}
+function restoreView(){
+  try{
+    const saved = JSON.parse(sessionStorage.getItem(VIEW_STORAGE_KEY) || 'null');
+    if(saved && saved.view){
+      state.view = saved.view;
+      state.selectedPO = saved.selectedPO || null;
+      state.selectedSO = saved.selectedSO || null;
+      document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view));
+    }
+  }catch(e){ /* ignore corrupt/blocked storage — falls back to the default view */ }
+}
 function switchView(v){
   if(v !== state.view && state.view === 'catalog'){
     // Filters/selection are scoped to staying on this module — leaving it
@@ -775,6 +799,7 @@ function switchView(v){
   state.selectedSO = null;
   state.selectedPO = null;
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
+  persistView();
   render();
 }
 
@@ -809,8 +834,8 @@ async function render(){
     if(!valid){ return renderLogin(); }
   }
   if(v === 'catalog') return renderCatalog();
-  if(v === 'salesorders') return renderSalesOrders();
-  if(v === 'purchaseorders') return renderPurchaseOrders();
+  if(v === 'salesorders') return state.selectedSO ? renderSalesOrderDetail() : renderSalesOrders();
+  if(v === 'purchaseorders') return state.selectedPO ? renderPurchaseOrderDetail() : renderPurchaseOrders();
   if(v === 'ship') return renderReplenishment('replenishmentPlanner', 'Ship to Noon FBN', 'This week\'s shipment quantities — recalculates the moment you paste new weekly stock numbers.', 'ShipQty', 'SuggestedShipQty', 'NoonSaleableQty', 'Noon saleable', 'ship');
   if(v === 'restock') return renderReplenishment('internalReplenishment', 'Restock internal WH', 'Purchase order quantities needed from your supplier, paced by supplier lead time.', 'POQty', 'SuggestedPOQty', 'InternalOnHand', 'Internal on hand', 'restock');
   if(v === 'shipments') return renderShipments();
@@ -1554,6 +1579,7 @@ async function renderWeekly(){
 }
 
 async function renderSalesOrders(){
+  state.view = 'salesorders'; state.selectedSO = null; persistView();
   $main.innerHTML = viewHead('Sales Orders', 'Shipments sent to Noon FBN. Click one to view or add its items.') + panelShell('loading');
   try{
     const rows = await apiGet('salesOrder');
@@ -1631,6 +1657,7 @@ async function openCreateSOModal(){
 
 
 async function renderSalesOrderDetail(){
+  state.view = 'salesorders'; persistView();
   const soNumber = state.selectedSO;
   $main.innerHTML = `<div class="view-head"><a href="#" id="backToSO" style="color:var(--blue);font-size:12.5px;text-decoration:none;">← All Sales Orders</a>
     <h2 class="view-title" style="margin-top:8px;">${soNumber}</h2></div>` + panelShell('loading');
@@ -1834,6 +1861,7 @@ function openSOImportModal(soNumber, header, catalog){
 }
 
 async function renderPurchaseOrders(){
+  state.view = 'purchaseorders'; state.selectedPO = null; persistView();
   $main.innerHTML = viewHead('Purchase Orders', 'Orders placed with your suppliers to restock Internal WH. Click one to view or add its items.') + panelShell('loading');
   try{
     const rows = await apiGet('purchaseOrder');
@@ -1945,6 +1973,7 @@ async function openCreatePOModal(){
 }
 
 async function renderPurchaseOrderDetail(){
+  state.view = 'purchaseorders'; persistView();
   let poNumber = state.selectedPO;
   $main.innerHTML = `<div class="view-head"><a href="#" id="backToPO" style="color:var(--blue);font-size:12.5px;text-decoration:none;">← All Purchase Orders</a>
     <h2 class="view-title" style="margin-top:8px;">${poNumber}</h2></div>` + panelShell('loading');
@@ -2068,9 +2097,19 @@ async function renderPurchaseOrderDetail(){
     const invoiceInput = document.getElementById('invoiceNumberInput');
     const saveHeaderBtn = document.getElementById('saveHeaderBtn');
     const cancelHeaderBtn = document.getElementById('cancelHeaderBtn');
+    // Quotation #/Invoice # are also picked up automatically by their gated
+    // status button (Confirm Quotation / Validate / Received and Validate)
+    // the first time they're filled in — so "Save changes" only needs to
+    // appear once there's an already-saved value being edited (2nd time
+    // onward). PO number has no such button, so it always counts.
+    function isHeaderFieldDirty(inp){
+      if(!inp || inp.value === inp.dataset.original) return false;
+      if(inp !== poNumberInput && inp.dataset.original === '') return false;
+      return true;
+    }
     function checkHeaderDirty(){
       if(!saveHeaderBtn) return;
-      const dirty = [poNumberInput, quotationInput, invoiceInput].some(inp => inp && inp.value !== inp.dataset.original);
+      const dirty = [poNumberInput, quotationInput, invoiceInput].some(isHeaderFieldDirty);
       saveHeaderBtn.style.display = dirty ? '' : 'none';
       if(cancelHeaderBtn) cancelHeaderBtn.style.display = dirty ? '' : 'none';
     }
@@ -3006,6 +3045,7 @@ function errorState(e){ return `<div class="empty" style="color:var(--red)">Coul
 document.querySelectorAll('.nav-item').forEach(n => n.onclick = () => switchView(n.dataset.view));
 
 (async function init(){
+  restoreView(); // land back on whatever screen/order was open before a refresh
   await loadConfig();
   if(state.config && state.config.url && state.config.key){
     try{
