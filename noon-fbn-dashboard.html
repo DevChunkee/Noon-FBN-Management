@@ -169,7 +169,7 @@
 
 <script>
 const state = { config: null, catalog: [], view: 'catalog', selectedSO: null, selectedPO: null, session: null,
-  catalogFilters: { brands: [], suppliers: [], flags: [], internalStock: [], noonStock: [] }, catalogSelected: new Set() };
+  catalogFilters: { brands: [], suppliers: [], flags: [], internalStock: [], noonStock: [] }, catalogSelected: new Set(), catalogSearch: '' };
 const $main = document.getElementById('main');
 
 function fmt(n){ if(n===null||n===undefined||n==='') return '—'; if(typeof n!=='number') return n;
@@ -699,6 +699,7 @@ function switchView(v){
     // (even to come back later) starts clean, same as a fresh page load.
     state.catalogFilters = { brands: [], suppliers: [], flags: [], internalStock: [], noonStock: [] };
     state.catalogSelected = new Set();
+    state.catalogSearch = '';
   }
   state.view = v;
   state.selectedSO = null;
@@ -811,7 +812,7 @@ async function renderCatalog(){
       return `<span class="chip green">${fmt(qty)}</span>`;
     };
     const rows = state.catalog.map(c => `
-      <tr data-zsku="${c.zSKU}" data-brand="${c.Brand||''}" data-supplier="${c.Supplier||''}" data-flag="${c.MarginFlag||''}" data-internalstock="${c._internalStock}" data-noonstock="${c._noonStock}" class="clickable" title="Click to edit this item">
+      <tr data-zsku="${c.zSKU}" data-zskusearch="${(c.zSKU||'').toLowerCase()}" data-sku="${(c.SKU||'').toLowerCase()}" data-barcode="${(c.Barcode||'').toLowerCase()}" data-brand="${c.Brand||''}" data-supplier="${c.Supplier||''}" data-flag="${c.MarginFlag||''}" data-internalstock="${c._internalStock}" data-noonstock="${c._noonStock}" class="clickable" title="Click to edit this item">
         <td><input type="checkbox" class="catalogRowCheck" ${state.catalogSelected.has(c.zSKU)?'checked':''} onclick="event.stopPropagation()"></td>
         <td class="sku">${c.SKU}</td>
         <td>${c.ItemName}</td>
@@ -867,6 +868,7 @@ async function renderCatalog(){
       ${state.catalog.length ? `
       <div class="panel-head" style="flex-wrap:wrap;gap:10px;">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="text" id="catalogSearchInput" placeholder="Search zSKU, SKU or barcode…" value="${state.catalogSearch.replace(/"/g,'&quot;')}" style="width:220px;">
           ${msFilterHtml('brand', 'Brand', optionsFor('brand'), state.catalogFilters.brands)}
           ${msFilterHtml('supplier', 'Supplier', optionsFor('supplier'), state.catalogFilters.suppliers)}
           ${msFilterHtml('flag', 'Flag', optionsFor('flag'), state.catalogFilters.flags)}
@@ -915,6 +917,7 @@ async function renderCatalog(){
     }
     function applyCatalogFilter(){
       const { brands: fb, suppliers: fs, flags: ff, internalStock: fi, noonStock: fn } = state.catalogFilters;
+      const q = (state.catalogSearch||'').trim().toLowerCase();
       let shown = 0;
       document.querySelectorAll('tr[data-zsku]').forEach(tr => {
         let show = true;
@@ -923,15 +926,21 @@ async function renderCatalog(){
         if(ff.length && !ff.includes(tr.dataset.flag)) show = false;
         if(fi.length && !fi.includes(tr.dataset.internalstock)) show = false;
         if(fn.length && !fn.includes(tr.dataset.noonstock)) show = false;
+        if(q && !(tr.dataset.zskusearch.includes(q) || tr.dataset.sku.includes(q) || tr.dataset.barcode.includes(q))) show = false;
         tr.style.display = show ? '' : 'none';
         if(show) shown++;
       });
       const label = document.getElementById('rowCountLabel');
-      const filtered = fb.length || fs.length || ff.length || fi.length || fn.length;
+      const filtered = fb.length || fs.length || ff.length || fi.length || fn.length || q;
       if(label) label.textContent = filtered ? `${shown} of ${state.catalog.length} SKUs (filtered)` : `${state.catalog.length} SKU${state.catalog.length===1?'':'s'}`;
       const selectAll = document.getElementById('catalogSelectAll');
       if(selectAll) selectAll.checked = false;
     }
+    const catalogSearchInput = document.getElementById('catalogSearchInput');
+    if(catalogSearchInput) catalogSearchInput.oninput = () => {
+      state.catalogSearch = catalogSearchInput.value;
+      applyCatalogFilter();
+    };
     if(state.catalog.length){
       const dimLabels = { brand: 'Brand', supplier: 'Supplier', flag: 'Flag', internalstock: 'Internal WH stock', noonstock: 'Noon FBN saleable' };
       function setBtnLabel(dim){
@@ -985,6 +994,7 @@ async function renderCatalog(){
       });
       document.getElementById('filterClearBtn').onclick = () => {
         state.catalogFilters = { brands: [], suppliers: [], flags: [], internalStock: [], noonStock: [] };
+        state.catalogSearch = '';
         renderCatalog();
       };
       applyCatalogFilter();
