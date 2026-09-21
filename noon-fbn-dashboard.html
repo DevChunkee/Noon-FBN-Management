@@ -265,7 +265,7 @@ const FIELD_MAPS = {
     qty_received:'QtyReceived', qty_damaged:'QtyDamaged', discrepancy:'Discrepancy', line_status:'LineStatus',
     confirmed_qty:'ConfirmedQty', shortage_reason:'ShortageReason', effective_qty:'EffectiveQty', so_cancelled:'SOCancelled' },
   purchaseOrder: { po_number:'PONumber', po_date:'PODate', supplier:'Supplier', expected_delivery:'ExpectedDelivery',
-    status:'Status', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
+    status:'Status', quotation_number:'QuotationNumber', invoice_number:'InvoiceNumber', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
     total_received_qty:'TotalReceivedQty' },
   purchaseOrderLine: { po_number:'PONumber', line_num:'LineNum', zsku:'zSKU', sku:'SKU', qty_ordered:'QtyOrdered',
     unit_cost:'UnitCost', line_total:'LineTotal', qty_received:'QtyReceived', confirmed_qty:'ConfirmedQty',
@@ -354,6 +354,22 @@ async function apiPost(action, payload){
         ? `The database doesn't allow status "${payload.status}" yet — run migration 10_po_status_open_validated.sql in Supabase, then try again.`
         : error.message);
       result = { ok:true }; break;
+    }
+    case 'updatePOQuotationNumber': {
+      const { data: po, error: poErr } = await client.from('purchase_orders').select('status')
+        .eq('po_number', payload.poNumber).single();
+      if(poErr) throw new Error(poErr.message);
+      if(po && po.status !== 'RFQ') throw new Error('Quotation number is only editable while this PO is in the RFQ stage.');
+      const { error } = await client.from('purchase_orders').update({ quotation_number: payload.value || null }).eq('po_number', payload.poNumber);
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'updatePOInvoiceNumber': {
+      const { data: po, error: poErr } = await client.from('purchase_orders').select('status')
+        .eq('po_number', payload.poNumber).single();
+      if(poErr) throw new Error(poErr.message);
+      if(po && !['Purchase Order','Received'].includes(po.status)) throw new Error('Invoice number is only editable while this PO is in the Purchase Order or Received stage.');
+      const { error } = await client.from('purchase_orders').update({ invoice_number: payload.value || null }).eq('po_number', payload.poNumber);
+      if(error) throw new Error(error.message); result = { ok:true }; break;
     }
     case 'cancelSalesOrder': {
       const { error } = await client.from('sales_orders').update({ cancelled: true }).eq('so_number', payload.soNumber);
@@ -1865,6 +1881,8 @@ async function renderPurchaseOrderDetail(){
     const qtyEditableStage = isOpen;           // Qty ordered only editable in the Open (draft) stage
     const confirmedEditableStage = isRFQ;      // Confirmed qty only editable in the RFQ stage
     const qtyReceivedEditableStage = isPO;     // Qty received only editable in the Purchase Order stage
+    const quotationEditableStage = isRFQ;      // Quotation number only editable in the RFQ stage, required to Confirm Quotation
+    const invoiceEditableStage = isPO || isReceived; // Invoice number editable from Purchase Order onward, required to Validate
     const enrichedLines = myLines.map(l => {
       const isConfirmed = l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined;
       const confirmedVal = isConfirmed ? Number(l.ConfirmedQty) : Number(l.QtyOrdered||0);
@@ -1907,16 +1925,16 @@ async function renderPurchaseOrderDetail(){
       statusActions.push({ id:'confirmOrderBtn', label:'Confirm Order', primary:true, to:'RFQ', confirmMsg:'Confirm the Qty ordered and send this as an RFQ? Qty ordered will lock.' });
     }
     if(isRFQ){
-      statusActions.push({ id:'confirmQuoteBtn', label:'Confirm Quotation', primary:true, to:'Purchase Order', confirmMsg:'Confirm the supplier\'s quotation? Confirmed qty becomes editable.' });
+      statusActions.push({ id:'confirmQuoteBtn', label:'Confirm Quotation', primary:true, to:'Purchase Order', confirmMsg:'Confirm the supplier\'s quotation? Confirmed qty becomes editable.', require:'quotationNumberInput', requireMsg:'Enter a Quotation number before confirming the quotation.', requireAction:'updatePOQuotationNumber' });
       statusActions.push({ id:'backToOpenBtn', label:'Back to Open', primary:false, to:'Open', confirmMsg:'Move this PO back to Open? Qty ordered becomes editable again.' });
     }
     if(isPO){
       statusActions.push({ id:'receivedBtn', label:'Received', primary:true, to:'Received', confirmMsg:'Mark this PO as Received?' });
-      statusActions.push({ id:'receivedValidateBtn', label:'Received and Validate', primary:true, to:'Validated', confirmMsg:'Mark this PO as Received and Validated in one step?' });
+      statusActions.push({ id:'receivedValidateBtn', label:'Received and Validate', primary:true, to:'Validated', confirmMsg:'Mark this PO as Received and Validated in one step?', require:'invoiceNumberInput', requireMsg:'Enter an Invoice number before validating.', requireAction:'updatePOInvoiceNumber' });
       statusActions.push({ id:'backToRFQBtn', label:'Back to RFQ', primary:false, to:'RFQ', confirmMsg:'Move this PO back to RFQ?' });
     }
     if(isReceived){
-      statusActions.push({ id:'validateBtn', label:'Validate', primary:true, to:'Validated', confirmMsg:'Validate this PO? This is its final stage.' });
+      statusActions.push({ id:'validateBtn', label:'Validate', primary:true, to:'Validated', confirmMsg:'Validate this PO? This is its final stage.', require:'invoiceNumberInput', requireMsg:'Enter an Invoice number before validating.', requireAction:'updatePOInvoiceNumber' });
       statusActions.push({ id:'backToPOBtn', label:'Back to Purchase Order', primary:false, to:'Purchase Order', confirmMsg:'Move this PO back to Purchase Order?' });
     }
     if(isValidated){
@@ -1931,9 +1949,17 @@ async function renderPurchaseOrderDetail(){
           ${statusActions.map(a => `<button class="btn${a.primary?' primary':''}" id="${a.id}">${a.label}</button>`).join('')}
           ${canCancel ? `<button class="btn" id="cancelPOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>` : ''}
         </div></div>
-      <div class="batch-bar"><label>Date</label><span>${header?header.PODate:''}</span>
+      <div class="batch-bar" style="flex-wrap:wrap;"><label>Date</label><span>${header?header.PODate:''}</span>
         <label>Supplier</label><span>${header?header.Supplier:''}</span>
-        <label>Status</label><span>${status}</span></div>
+        <label>Status</label><span>${status}</span>
+        <label>Quotation #</label><span>${quotationEditableStage
+          ? `<input type="text" id="quotationNumberInput" data-original="${((header&&header.QuotationNumber)||'').replace(/"/g,'&quot;')}" value="${((header&&header.QuotationNumber)||'').replace(/"/g,'&quot;')}" placeholder="Required to confirm" style="width:150px;">`
+          : ((header&&header.QuotationNumber)||'—')}</span>
+        <label>Invoice #</label><span>${invoiceEditableStage
+          ? `<input type="text" id="invoiceNumberInput" data-original="${((header&&header.InvoiceNumber)||'').replace(/"/g,'&quot;')}" value="${((header&&header.InvoiceNumber)||'').replace(/"/g,'&quot;')}" placeholder="Required to validate" style="width:150px;">`
+          : ((header&&header.InvoiceNumber)||'—')}</span>
+        ${(quotationEditableStage || invoiceEditableStage) ? `<button class="btn" id="cancelHeaderBtn" style="display:none;">Cancel</button><button class="btn primary" id="saveHeaderBtn" style="display:none;">Save changes</button>` : ''}
+      </div>
     `);
     const cancelBtn = document.getElementById('cancelPOBtn');
     if(cancelBtn) cancelBtn.onclick = async () => {
@@ -1941,13 +1967,51 @@ async function renderPurchaseOrderDetail(){
       try{ await apiPost('cancelPurchaseOrder', { poNumber }); renderPurchaseOrderDetail(); }
       catch(e){ alert(e.message); } // server blocks this if anything's already been received
     };
+    const quotationInput = document.getElementById('quotationNumberInput');
+    const invoiceInput = document.getElementById('invoiceNumberInput');
+    const saveHeaderBtn = document.getElementById('saveHeaderBtn');
+    const cancelHeaderBtn = document.getElementById('cancelHeaderBtn');
+    function checkHeaderDirty(){
+      if(!saveHeaderBtn) return;
+      const dirty = [quotationInput, invoiceInput].some(inp => inp && inp.value !== inp.dataset.original);
+      saveHeaderBtn.style.display = dirty ? '' : 'none';
+      if(cancelHeaderBtn) cancelHeaderBtn.style.display = dirty ? '' : 'none';
+    }
+    [quotationInput, invoiceInput].forEach(inp => { if(inp) inp.addEventListener('input', checkHeaderDirty); });
+    if(cancelHeaderBtn) cancelHeaderBtn.onclick = () => {
+      [quotationInput, invoiceInput].forEach(inp => { if(inp) inp.value = inp.dataset.original; });
+      checkHeaderDirty();
+    };
+    if(saveHeaderBtn) saveHeaderBtn.onclick = async () => {
+      saveHeaderBtn.disabled = true; saveHeaderBtn.textContent = 'Saving…';
+      try{
+        if(quotationInput && quotationInput.value !== quotationInput.dataset.original){
+          await apiPost('updatePOQuotationNumber', { poNumber, value: quotationInput.value.trim() });
+        }
+        if(invoiceInput && invoiceInput.value !== invoiceInput.dataset.original){
+          await apiPost('updatePOInvoiceNumber', { poNumber, value: invoiceInput.value.trim() });
+        }
+        renderPurchaseOrderDetail();
+      }catch(e){ alert('Could not save: ' + e.message); saveHeaderBtn.disabled = false; saveHeaderBtn.textContent = 'Save changes'; checkHeaderDirty(); }
+    };
     statusActions.forEach(a => {
       const btn = document.getElementById(a.id);
       if(!btn) return;
       btn.onclick = async () => {
+        let reqInput = null;
+        if(a.require){
+          reqInput = document.getElementById(a.require);
+          const val = reqInput ? reqInput.value.trim() : '';
+          if(!val){ alert(a.requireMsg); if(reqInput) reqInput.focus(); return; }
+        }
         if(!confirm(a.confirmMsg)) return;
         btn.disabled = true;
-        try{ await apiPost('setPOStatus', { poNumber, status: a.to }); renderPurchaseOrderDetail(); }
+        try{
+          if(reqInput && a.requireAction && reqInput.value.trim() !== reqInput.dataset.original){
+            await apiPost(a.requireAction, { poNumber, value: reqInput.value.trim() });
+          }
+          await apiPost('setPOStatus', { poNumber, status: a.to }); renderPurchaseOrderDetail();
+        }
         catch(e){ alert(e.message); btn.disabled = false; }
       };
     });
