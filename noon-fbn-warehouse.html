@@ -112,6 +112,7 @@
     <div class="conn" id="connStatus"><span class="conn-dot"></span><span id="connLabel">not connected</span></div>
   </div>
   <div class="tabs">
+    <div class="tab" data-view="overview">Overview</div>
     <div class="tab" data-view="delivery">Delivery</div>
     <div class="tab" data-view="picking">Picking</div>
     <div class="tab" data-view="receipt">Receipt</div>
@@ -121,7 +122,7 @@
 </div>
 
 <script>
-const state = { config: null, catalog: [], view: 'delivery', selectedSO: null, selectedPO: null, session: null };
+const state = { config: null, catalog: [], view: 'overview', selectedSO: null, selectedPO: null, session: null };
 const $main = document.getElementById('main');
 
 function fmt(n){ if(n===null||n===undefined||n==='') return '—'; if(typeof n!=='number') return n;
@@ -209,7 +210,8 @@ const FIELD_MAPS = {
     qty_received:'QtyReceived', qty_damaged:'QtyDamaged', discrepancy:'Discrepancy', line_status:'LineStatus',
     confirmed_qty:'ConfirmedQty', shortage_reason:'ShortageReason', effective_qty:'EffectiveQty', so_cancelled:'SOCancelled' },
   purchaseOrder: { po_number:'PONumber', po_date:'PODate', supplier:'Supplier', expected_delivery:'ExpectedDelivery',
-    status:'Status', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
+    status:'Status', quotation_number:'QuotationNumber', invoice_number:'InvoiceNumber', received_date:'ReceivedDate',
+    total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
     total_received_qty:'TotalReceivedQty' },
   purchaseOrderLine: { po_number:'PONumber', line_num:'LineNum', zsku:'zSKU', sku:'SKU', qty_ordered:'QtyOrdered',
     unit_cost:'UnitCost', line_total:'LineTotal', qty_received:'QtyReceived', confirmed_qty:'ConfirmedQty',
@@ -263,6 +265,33 @@ async function apiPost(action, payload){
       const { data, error } = await client.rpc('rpc_update_warehouse_receipt', { p_po_number: payload.poNumber, p_line_num: Number(payload.lineNum), p_received_qty: Number(payload.receivedQty) });
       if(error) throw new Error(error.message); result = { ok:true, totalReceived: data }; break;
     }
+    // Mirrors the main dashboard's setPOStatus case — the warehouse's
+    // Received / Received and Validate buttons drive the same status column.
+    case 'setPOStatus': {
+      const patch = { status: payload.status };
+      if(payload.status === 'Received' || payload.status === 'Validated'){
+        const { data: existing } = await client.from('purchase_orders').select('received_date').eq('po_number', payload.poNumber).single();
+        if(existing && !existing.received_date) patch.received_date = today();
+      }
+      const { error } = await client.from('purchase_orders').update(patch).eq('po_number', payload.poNumber);
+      if(error) throw new Error(error.code === '23514'
+        ? `The database doesn't allow status "${payload.status}" yet — ask an admin to run the PO status migration.`
+        : error.message);
+      result = { ok:true }; break;
+    }
+    // Mirrors the main dashboard's updatePOInvoiceNumber case — used by the
+    // "Received and Validate" invoice-number wizard.
+    case 'updatePOInvoiceNumber': {
+      const { data: po, error: poErr } = await client.from('purchase_orders').select('status')
+        .eq('po_number', payload.poNumber).single();
+      if(poErr) throw new Error(poErr.message);
+      if(po && !['Purchase Order','Received'].includes(po.status)) throw new Error('Invoice number is only editable while this PO is in the Purchase Order or Received stage.');
+      const { error } = await client.from('purchase_orders').update({ invoice_number: payload.value || null }).eq('po_number', payload.poNumber);
+      if(error) throw new Error(error.code === '42703'
+        ? 'The database doesn\'t have an invoice_number column yet — ask an admin to run migration 11_po_quotation_invoice.sql.'
+        : error.message);
+      result = { ok:true }; break;
+    }
     default: throw new Error('Unknown action: ' + action);
   }
   invalidateCache();
@@ -313,11 +342,36 @@ function openScanModal(onResult){
 }
 
 // ---------------- view routing ----------------
+// Remembers which tab (and, for Picking/Receipt, which specific order) is
+// open so a browser refresh lands back where staff were instead of bouncing
+// to Overview. sessionStorage survives a refresh but clears itself once the
+// tab/app is actually closed — matching "stay on the page on refresh" without
+// stale state hanging around forever.
+const VIEW_STORAGE_KEY = 'noonFbnWarehouseView';
+function persistView(){
+  try{
+    sessionStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify({
+      view: state.view, selectedSO: state.selectedSO, selectedPO: state.selectedPO
+    }));
+  }catch(e){ /* private-browsing / storage disabled — just skip persisting */ }
+}
+function restoreView(){
+  try{
+    const saved = JSON.parse(sessionStorage.getItem(VIEW_STORAGE_KEY) || 'null');
+    if(saved && saved.view){
+      state.view = saved.view;
+      state.selectedSO = saved.selectedSO || null;
+      state.selectedPO = saved.selectedPO || null;
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === state.view));
+    }
+  }catch(e){ /* ignore corrupt/blocked storage — falls back to the default view */ }
+}
 function switchView(v){
   state.view = v;
   state.selectedSO = null;
   state.selectedPO = null;
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
+  persistView();
   render();
 }
 async function render(){
@@ -328,6 +382,7 @@ async function render(){
     const valid = await verifySession();
     if(!valid){ return renderLogin(); }
   }
+  if(v === 'overview') return renderOverview();
   if(v === 'delivery') return renderDelivery();
   if(v === 'picking') return state.selectedSO ? renderPicking() : renderPickingPicker();
   if(v === 'receipt') return state.selectedPO ? renderReceipt() : renderReceiptPicker();
@@ -366,8 +421,44 @@ function setPanel(html){ const p = document.getElementById('panelBody'); if(p) p
 function emptyState(msg){ return `<div class="empty">${msg}</div>`; }
 function errorState(e){ return `<div class="empty" style="color:var(--red)">Couldn't load: ${e.message}</div>`; }
 
+// ---------------- Overview ----------------
+// Default landing screen: a quick summary of what needs attention, with
+// tap-through cards into Picking and Receipt. Reuses the same eligibility
+// rules as those screens so the counts here always match what's actually
+// waiting there.
+async function renderOverview(){
+  state.view = 'overview'; state.selectedSO = null; state.selectedPO = null; persistView();
+  $main.innerHTML = viewHead('Overview', 'What needs attention right now.') + panelShell();
+  try{
+    const [soOrders, soLines, poOrders] = await Promise.all([
+      apiGet('salesOrder'), apiGet('salesOrderLine'), apiGet('purchaseOrder')
+    ]);
+    const pendingPicks = soOrders.filter(o => o.Cancelled !== 'Yes').map(o => {
+      const myLines = soLines.filter(l => l.SONumber === o.SONumber);
+      const unconfirmed = myLines.filter(l => l.ConfirmedQty === '' || l.ConfirmedQty === undefined).length;
+      return unconfirmed;
+    }).filter(n => n > 0).length;
+    const pendingReceipts = poOrders.filter(o => o.Status === 'Purchase Order').length;
+
+    const html = `
+      <div class="order-card" id="overviewPicking">
+        <div><div class="id">Picking</div><div class="meta">${pendingPicks} Sales Order(s) need picking</div></div>
+        <span class="chip ${pendingPicks ? 'amber' : 'green'}">${pendingPicks ? 'Needs attention' : 'All clear'}</span>
+      </div>
+      <div class="order-card" id="overviewReceipt">
+        <div><div class="id">Receipt</div><div class="meta">${pendingReceipts} Purchase Order(s) ready to receive</div></div>
+        <span class="chip ${pendingReceipts ? 'amber' : 'green'}">${pendingReceipts ? 'Needs attention' : 'All clear'}</span>
+      </div>
+    `;
+    setPanel(html);
+    document.getElementById('overviewPicking').onclick = () => switchView('picking');
+    document.getElementById('overviewReceipt').onclick = () => switchView('receipt');
+  }catch(e){ setPanel(errorState(e)); }
+}
+
 // ---------------- Delivery ----------------
 async function renderDelivery(){
+  state.view = 'delivery'; persistView();
   $main.innerHTML = viewHead('Delivery', 'Sales Orders scheduled to ship to Noon FBN. Tap one to start picking.') + panelShell();
   try{
     const orders = await apiGet('salesOrder');
@@ -393,6 +484,7 @@ async function renderDelivery(){
 
 // ---------------- Picking ----------------
 async function renderPickingPicker(){
+  state.view = 'picking'; state.selectedSO = null; persistView();
   $main.innerHTML = viewHead('Picking', 'Choose a Sales Order to pick.') + panelShell();
   try{
     const orders = await apiGet('salesOrder');
@@ -409,6 +501,7 @@ async function renderPickingPicker(){
 }
 
 async function renderPicking(){
+  state.view = 'picking'; persistView();
   const soNumber = state.selectedSO;
   $main.innerHTML = `<a href="#" class="back" id="backPicking">← Choose a different order</a>` +
     viewHead(`Picking — ${soNumber}`, 'Confirm what was actually picked for each item. A shortfall needs a reason before saving.') + panelShell();
@@ -491,33 +584,78 @@ async function renderPicking(){
 
 // ---------------- Receipt ----------------
 async function renderReceiptPicker(){
-  $main.innerHTML = viewHead('Receipt', 'Choose a Purchase Order to receive against.') + panelShell();
+  state.view = 'receipt'; state.selectedPO = null; persistView();
+  $main.innerHTML = viewHead('Receipt', 'Purchase Orders confirmed by the supplier and ready to receive.') + panelShell();
   try{
     const orders = await apiGet('purchaseOrder');
-    const eligible = orders.filter(o => o.Status !== 'Cancelled');
-    const cardsHtml = eligible.length ? eligible.slice().reverse().map(o => {
-      const done = Number(o.TotalConfirmedQty||0) > 0 && Number(o.TotalReceivedQty||0) >= Number(o.TotalConfirmedQty||0);
-      return `<div class="order-card" data-po="${o.PONumber}">
+    // A PO only shows up here once it's actually in the "Purchase Order"
+    // stage — that's the only stage Qty received is editable in the main
+    // dashboard. Earlier stages (Open/RFQ) are still "waiting" on the office
+    // side; later stages (Received/Validated/Cancelled) are already done.
+    const eligible = orders.filter(o => o.Status === 'Purchase Order');
+    const cardsHtml = eligible.length ? eligible.slice().reverse().map(o => `
+      <div class="order-card" data-po="${o.PONumber}">
         <div><div class="id">${o.PONumber}</div><div class="meta">${o.Supplier||''} · received ${fmt(o.TotalReceivedQty)}/${fmt(o.TotalConfirmedQty)}</div></div>
-        ${done ? `<span class="chip green">Fully received</span>` : `<span class="chip amber">Pending</span>`}
-      </div>`;
-    }).join('') : '';
-    setPanel(cardsHtml || emptyState('No purchase orders to receive against.'));
+        <span class="chip amber">Pending</span>
+      </div>`).join('') : '';
+    setPanel(cardsHtml || emptyState('Nothing pending — no purchase orders are ready to receive right now.'));
     document.querySelectorAll('.order-card[data-po]').forEach(card => {
       card.onclick = () => { state.selectedPO = card.dataset.po; renderReceipt(); };
     });
   }catch(e){ setPanel(errorState(e)); }
 }
 
+// Small popup asking for the supplier invoice number before validating —
+// mirrors the main dashboard's "Invoice # required to Validate" rule, just
+// as a one-off wizard instead of an always-visible header field.
+function openInvoiceWizard(onSubmit){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal">
+    <h3>Invoice number required</h3>
+    <p style="color:var(--text-dim);font-size:13px;margin:-6px 0 14px;">Enter the supplier's invoice number to validate this Purchase Order.</p>
+    <div class="field"><label>Invoice number</label><input type="text" id="invoiceWizardInput" style="width:100%;" autofocus></div>
+    <span class="msg err" id="invoiceWizardErr" style="display:none;padding:6px 0 0;">Invoice number is required.</span>
+    <div class="form-foot" style="margin-top:10px;">
+      <button class="btn primary" id="invoiceWizardConfirm" style="flex:1;">Validate</button>
+      <button class="btn" id="invoiceWizardCancel">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const input = document.getElementById('invoiceWizardInput');
+  const err = document.getElementById('invoiceWizardErr');
+  input.focus();
+  overlay.onclick = (e) => { if(e.target === overlay) overlay.remove(); };
+  document.getElementById('invoiceWizardCancel').onclick = () => overlay.remove();
+  document.getElementById('invoiceWizardConfirm').onclick = () => {
+    const value = input.value.trim();
+    if(!value){ err.style.display = ''; input.focus(); return; }
+    overlay.remove();
+    onSubmit(value);
+  };
+  input.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); document.getElementById('invoiceWizardConfirm').click(); } };
+}
+
 async function renderReceipt(){
+  state.view = 'receipt'; persistView();
   const poNumber = state.selectedPO;
   $main.innerHTML = `<a href="#" class="back" id="backReceipt">← Choose a different order</a>` +
     viewHead(`Receipt — ${poNumber}`, 'Enter how many units arrived in this delivery. Adds to any already received on each line.') + panelShell();
   document.getElementById('backReceipt').onclick = (e) => { e.preventDefault(); state.selectedPO = null; renderReceiptPicker(); };
   try{
     const catalog = await ensureCatalog();
-    const lines = (await apiGet('purchaseOrderLine', true)).filter(l => l.PONumber === poNumber);
+    const [orders, allLines] = await Promise.all([apiGet('purchaseOrder', true), apiGet('purchaseOrderLine', true)]);
+    const header = orders.find(o => o.PONumber === poNumber);
+    const lines = allLines.filter(l => l.PONumber === poNumber);
     if(!lines.length){ setPanel(emptyState('This order has no lines yet.')); return; }
+    // This screen only accepts receipts while the PO is in the "Purchase
+    // Order" stage — if it's moved on since this screen was opened (e.g. a
+    // refresh restored a now-stale link), show a message instead of a form
+    // whose "Received"/"Validate" buttons would just fail server-side.
+    if(header && header.Status !== 'Purchase Order'){
+      setPanel(emptyState(`This order is now "${header.Status}" — it's no longer open for receiving.`));
+      return;
+    }
 
     const rowsHtml = lines.map(l => `
       <div class="line-row" data-zsku="${l.zSKU}" data-linenum="${l.LineNum}">
@@ -536,9 +674,10 @@ async function renderReceipt(){
         <button class="btn" id="scanCamBtn">📷</button>
       </div>
       ${rowsHtml}
-      <div style="padding:16px;">
-        <button class="btn primary full" id="saveReceiptBtn">Save receipt</button>
-        <div class="msg" id="receiptMsg" style="padding-top:10px;"></div>
+      <div style="padding:16px;display:flex;flex-direction:column;gap:10px;">
+        <button class="btn full" id="receivedBtn">Received</button>
+        <button class="btn primary full" id="receivedValidateBtn">Received and Validate</button>
+        <div class="msg" id="receiptMsg"></div>
       </div>
     `);
 
@@ -558,23 +697,53 @@ async function renderReceipt(){
     scanInput.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); handleScan(scanInput.value.trim()); } };
     document.getElementById('scanCamBtn').onclick = () => openScanModal(handleScan);
 
-    document.getElementById('saveReceiptBtn').onclick = async () => {
-      const btn = document.getElementById('saveReceiptBtn');
+    // Shared by both buttons: saves every line with a qty > 0 entered.
+    // Returns false (and shows an error) if nothing was entered at all.
+    async function saveReceivedQuantities(msg){
+      const rows = document.querySelectorAll('.line-row');
+      let any = false;
+      for(const row of rows){
+        const qty = Number(row.querySelector('.receiveInput').value || 0);
+        if(qty <= 0) continue;
+        any = true;
+        await apiPost('updateWarehouseReceipt', { poNumber, lineNum: row.dataset.linenum, receivedQty: qty });
+      }
+      if(!any){ msg.className = 'msg err'; msg.textContent = 'Enter at least one qty > 0.'; return false; }
+      return true;
+    }
+
+    const receivedBtn = document.getElementById('receivedBtn');
+    const receivedValidateBtn = document.getElementById('receivedValidateBtn');
+
+    receivedBtn.onclick = async () => {
       const msg = document.getElementById('receiptMsg');
-      btn.disabled = true; msg.className = 'msg'; msg.textContent = 'Saving…';
+      receivedBtn.disabled = true; receivedValidateBtn.disabled = true;
+      msg.className = 'msg'; msg.textContent = 'Saving…';
       try{
-        const rows = document.querySelectorAll('.line-row');
-        let any = false;
-        for(const row of rows){
-          const qty = Number(row.querySelector('.receiveInput').value || 0);
-          if(qty <= 0) continue;
-          any = true;
-          await apiPost('updateWarehouseReceipt', { poNumber, lineNum: row.dataset.linenum, receivedQty: qty });
-        }
-        if(!any){ msg.className = 'msg err'; msg.textContent = 'Enter at least one qty > 0.'; btn.disabled = false; return; }
-        msg.className = 'msg ok'; msg.textContent = 'Saved.';
-        setTimeout(() => renderReceipt(), 700);
-      }catch(e){ msg.className = 'msg err'; msg.textContent = e.message; btn.disabled = false; }
+        if(!(await saveReceivedQuantities(msg))){ receivedBtn.disabled = false; receivedValidateBtn.disabled = false; return; }
+        await apiPost('setPOStatus', { poNumber, status: 'Received' });
+        msg.className = 'msg ok'; msg.textContent = 'Saved — marked as Received.';
+        setTimeout(() => { state.selectedPO = null; renderReceiptPicker(); }, 800);
+      }catch(e){ msg.className = 'msg err'; msg.textContent = e.message; receivedBtn.disabled = false; receivedValidateBtn.disabled = false; }
+    };
+
+    receivedValidateBtn.onclick = async () => {
+      const msg = document.getElementById('receiptMsg');
+      // Check there's something to save before bothering with the wizard —
+      // no point asking for an invoice number just to fail right after.
+      const hasQty = Array.from(document.querySelectorAll('.receiveInput')).some(inp => Number(inp.value||0) > 0);
+      if(!hasQty){ msg.className = 'msg err'; msg.textContent = 'Enter at least one qty > 0.'; return; }
+      openInvoiceWizard(async (invoiceNumber) => {
+        receivedBtn.disabled = true; receivedValidateBtn.disabled = true;
+        msg.className = 'msg'; msg.textContent = 'Saving…';
+        try{
+          if(!(await saveReceivedQuantities(msg))){ receivedBtn.disabled = false; receivedValidateBtn.disabled = false; return; }
+          await apiPost('updatePOInvoiceNumber', { poNumber, value: invoiceNumber });
+          await apiPost('setPOStatus', { poNumber, status: 'Validated' });
+          msg.className = 'msg ok'; msg.textContent = 'Saved — marked as Received and Validated.';
+          setTimeout(() => { state.selectedPO = null; renderReceiptPicker(); }, 800);
+        }catch(e){ msg.className = 'msg err'; msg.textContent = e.message; receivedBtn.disabled = false; receivedValidateBtn.disabled = false; }
+      });
     };
   }catch(e){ setPanel(errorState(e)); }
 }
@@ -600,6 +769,7 @@ function renderSettings(){
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => switchView(t.dataset.view));
 
 (async function init(){
+  restoreView(); // land back on whatever screen/order was open before a refresh
   await loadConfig();
   if(state.config && state.config.url && state.config.key){
     try{
