@@ -350,7 +350,10 @@ async function apiPost(action, payload){
     // "next stage" buttons and the "back to previous stage" buttons.
     case 'setPOStatus': {
       const { error } = await client.from('purchase_orders').update({ status: payload.status }).eq('po_number', payload.poNumber);
-      if(error) throw new Error(error.message); result = { ok:true }; break;
+      if(error) throw new Error(error.code === '23514'
+        ? `The database doesn't allow status "${payload.status}" yet — run migration 10_po_status_open_validated.sql in Supabase, then try again.`
+        : error.message);
+      result = { ok:true }; break;
     }
     case 'cancelSalesOrder': {
       const { error } = await client.from('sales_orders').update({ cancelled: true }).eq('so_number', payload.soNumber);
