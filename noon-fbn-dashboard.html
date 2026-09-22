@@ -160,6 +160,7 @@
     <div class="nav-item" data-view="report-insights"><span class="nav-dot"></span>Product Insights</div>
     <div class="nav-section">Configurations</div>
     <div class="nav-item" data-view="suppliers"><span class="nav-dot"></span>Suppliers</div>
+    <div class="nav-item" data-view="deliverylocations"><span class="nav-dot"></span>Shipments</div>
     <div class="nav-item" data-view="settings"><span class="nav-dot"></span>Settings</div>
     <div class="rail-foot">
       <div class="conn" id="connStatus"><span class="conn-dot"></span><span id="connLabel">not connected</span></div>
@@ -264,7 +265,8 @@ const FIELD_MAPS = {
     dispatched_date:'DispatchedDate', delivered_date:'DeliveredDate', completed_date:'CompletedDate',
     shipment_day:'ShipmentDay', expected_sellable_date:'ExpectedSellableDate',
     total_units_sent:'TotalUnitsSent', total_confirmed_qty:'TotalConfirmedQty', total_effective_qty:'TotalEffectiveQty',
-    total_delivered_qty:'TotalDeliveredQty', status:'Status', raw_status:'RawStatus' },
+    total_delivered_qty:'TotalDeliveredQty', status:'Status', raw_status:'RawStatus',
+    delivery_location_id:'DeliveryLocationId', delivery_location_name:'DeliveryLocationName' },
   salesOrderLine: { so_number:'SONumber', line_num:'LineNum', zsku:'zSKU', qty_sent:'QtySent',
     confirmed_qty:'ConfirmedQty', delivered_qty:'DeliveredQty', shortage_reason:'ShortageReason',
     effective_qty:'EffectiveQty', so_status:'SOStatus' },
@@ -286,6 +288,8 @@ const FIELD_MAPS = {
   adjustmentLog: { adj_date:'Date', type:'Type', zsku:'zSKU', qty:'Qty', reason:'Reason' },
   suppliers: { id:'Id', name:'Name', contact_name:'ContactName', phone:'Phone', email:'Email',
     lead_time_weeks:'LeadTimeWeeks', notes:'Notes', status:'Status' },
+  deliveryLocations: { id:'Id', location_name:'LocationName', location_address:'LocationAddress',
+    location_link:'LocationLink', shipment_days:'ShipmentDays', status:'Status' },
 };
 
 function remap(row, map){
@@ -306,7 +310,7 @@ const TABLES = {
   purchaseOrder: 'v_purchase_orders', purchaseOrderLine: 'v_purchase_order_lines',
   replenishmentPlanner: 'v_replenishment_planner', internalReplenishment: 'v_internal_wh_replenishment',
   grnLog: 'grn_log', weeklyStockLog: 'weekly_saleable_stock_log', adjustmentLog: 'inventory_adjustments',
-  suppliers: 'suppliers',
+  suppliers: 'suppliers', deliveryLocations: 'delivery_locations',
 };
 
 async function apiGetRaw(action){
@@ -422,14 +426,50 @@ async function apiPost(action, payload){
         : error.message);
       result = { ok:true }; break;
     }
-    // "Confirm delivery" — office picks a scheduled delivery date and the SO
-    // moves to Scheduled. Shipment day (when it becomes visible for picking
-    // in the warehouse app) is computed automatically from this date minus
-    // settings.shipping_transit_days.
+    // "Confirm delivery" — office picks a delivery location and a scheduled
+    // delivery date (both required) and the SO moves to Scheduled. Shipment
+    // day (when it becomes visible for picking in the warehouse app) is
+    // computed automatically from this date minus the location's
+    // shipment_days (falls back to settings.shipping_transit_days for any
+    // order with no location on file).
     case 'scheduleSODelivery': {
+      if(!payload.deliveryLocationId) throw new Error('Pick a delivery location before confirming delivery.');
       const { error } = await client.from('sales_orders')
-        .update({ status: 'Scheduled', scheduled_date: payload.scheduledDate }).eq('so_number', payload.soNumber);
+        .update({ status: 'Scheduled', scheduled_date: payload.scheduledDate, delivery_location_id: Number(payload.deliveryLocationId) })
+        .eq('so_number', payload.soNumber);
+      if(error) throw new Error(error.code === '42703'
+        ? 'The database doesn\'t have a delivery_location_id column yet — ask an admin to run migration 16_delivery_locations.sql.'
+        : error.message);
+      result = { ok:true }; break;
+    }
+    case 'addDeliveryLocation': {
+      const { error } = await client.from('delivery_locations').insert({
+        location_name: payload.locationName, location_address: payload.locationAddress || null,
+        location_link: payload.locationLink || null, shipment_days: Number(payload.shipmentDays||0)
+      });
+      if(error) throw new Error(error.code === '23505' ? 'A delivery location with that name already exists.' : error.message);
+      result = { ok:true }; break;
+    }
+    case 'updateDeliveryLocation': {
+      const { error } = await client.from('delivery_locations').update({
+        location_name: payload.locationName, location_address: payload.locationAddress || null,
+        location_link: payload.locationLink || null, shipment_days: Number(payload.shipmentDays||0)
+      }).eq('id', payload.id);
+      if(error) throw new Error(error.code === '23505' ? 'A delivery location with that name already exists.' : error.message);
+      result = { ok:true }; break;
+    }
+    case 'archiveDeliveryLocation': {
+      const { error } = await client.from('delivery_locations').update({ status: 'Archived' }).eq('id', payload.id);
       if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'unarchiveDeliveryLocation': {
+      const { error } = await client.from('delivery_locations').update({ status: 'Active' }).eq('id', payload.id);
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'deleteDeliveryLocation': {
+      const { error } = await client.from('delivery_locations').delete().eq('id', payload.id);
+      if(error) throw new Error(error.code === '23503' ? 'This delivery location is referenced by existing sales orders and can\'t be deleted — archive it instead.' : error.message);
+      result = { ok:true }; break;
     }
     // Per-line Delivered qty, written by "Confirm POD" (Proof Of Delivery).
     case 'updateSODeliveredQty': {
@@ -584,6 +624,7 @@ async function apiPost(action, payload){
     default: throw new Error('Unknown action: ' + action);
   }
   if(action.toLowerCase().includes('supplier')) suppliersCache = null;
+  if(action.toLowerCase().includes('deliverylocation')) deliveryLocationsCache = null;
   invalidateCache();
   return result;
 }
@@ -626,6 +667,13 @@ async function ensureSuppliers(force){
   suppliersCache = await apiGet('suppliers', force);
   return suppliersCache;
 }
+let deliveryLocationsCache = null;
+async function ensureDeliveryLocations(force){
+  if(!force && deliveryLocationsCache) return deliveryLocationsCache;
+  deliveryLocationsCache = await apiGet('deliveryLocations', force);
+  return deliveryLocationsCache;
+}
+function activeDeliveryLocations(locations){ return locations.filter(l => l.Status !== 'Archived'); }
 function activeSupplierNames(list){
   return Array.from(new Set(list.filter(s => s.Status !== 'Archived').map(s => s.Name).filter(Boolean))).sort();
 }
@@ -888,6 +936,7 @@ async function render(){
   if(v === 'report-fillrate') return renderFillRateReport();
   if(v === 'report-insights') return renderProductInsights();
   if(v === 'suppliers') return renderSuppliers();
+  if(v === 'deliverylocations') return renderDeliveryLocations();
   if(v === 'settings') return renderSettings();
 }
 
@@ -1368,7 +1417,7 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
     const batchBar = mode === 'ship' ? `
       <div class="batch-bar">
         <label>SO number</label><input type="text" id="batchSO" value="${nextNum.number||''}">
-        <label>Ship date</label><input type="date" id="batchDate" value="${today()}">
+        <label>Creation date</label><input type="date" id="batchDate" value="${today()}">
         <button class="btn primary" id="batchAddBtn">Add checked items to Sales Order</button>
         <span class="msg" id="batchMsg"></span>
       </div>` : `
@@ -1489,7 +1538,7 @@ async function renderShipments(){
       <div class="panel-head"><h3>${rows.length} shipment${rows.length===1?'':'s'}</h3>
         <button class="btn" onclick="refreshAll()">Refresh</button></div>
       ${rows.length ? `<table>
-        <thead><tr><th>SO</th><th>Ship date</th><th>Expected sellable</th><th class="num">Sent</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Status</th></tr></thead>
+        <thead><tr><th>SO</th><th>Creation date</th><th>Expected sellable</th><th class="num">Sent</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Status</th></tr></thead>
         <tbody>${body}</tbody></table>` : emptyState('No shipments logged yet — use "Log shipment (SO)".')}
     `);
   }catch(e){ setPanel(errorState(e)); }
@@ -1643,7 +1692,7 @@ async function renderSalesOrders(){
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div></div>
       ${rows.length ? `<table>
-        <thead><tr><th>SO</th><th>Ship date</th><th>Scheduled</th><th class="num">Planned</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Status</th></tr></thead>
+        <thead><tr><th>SO</th><th>Creation date</th><th>Scheduled</th><th class="num">Planned</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Status</th></tr></thead>
         <tbody>${body}</tbody></table>` : emptyState('No sales orders yet — click "Create new Sales Order" above.')}
     `);
     document.querySelectorAll('tr.clickRow[data-so]').forEach(tr => {
@@ -1664,7 +1713,7 @@ async function openCreateSOModal(){
       <div class="panel-head"><h3>Create a new Sales Order</h3></div>
       <form class="form" id="newSOForm">
         <div class="field"><label>SO number</label><input type="text" name="soNumber" value="${nextNum.number||''}" required></div>
-        <div class="field"><label>Ship date</label><input type="date" name="shipDate" value="${today()}" required></div>
+        <div class="field"><label>Creation date</label><input type="date" name="shipDate" value="${today()}" required></div>
         <div class="form-foot">
           <button class="btn primary" type="submit">Create & open</button>
           <button class="btn" type="button" id="createSOCancelBtn">Cancel</button>
@@ -1694,32 +1743,44 @@ async function openCreateSOModal(){
 }
 
 
-// Small popup asking for a scheduled delivery date — moves the SO to
-// Scheduled. Shipment day (when it becomes visible for picking in the
-// warehouse app) is computed automatically from this date minus
-// settings.shipping_transit_days, so nothing else needs entering here.
-function openScheduleDeliveryModal(defaultDate, onSubmit){
+// Small popup asking for a scheduled delivery date AND a delivery location
+// (both required) — moves the SO to Scheduled. Shipment day (when it
+// becomes visible for picking in the warehouse app) is computed
+// automatically from the date minus the picked location's shipment_days,
+// so nothing else needs entering here.
+async function openScheduleDeliveryModal(defaultDate, defaultLocationId, onSubmit){
+  let locations;
+  try{ locations = activeDeliveryLocations(await ensureDeliveryLocations()); }
+  catch(e){ alert('Could not load delivery locations: ' + e.message); return; }
+  if(!locations.length){
+    alert('No delivery locations set up yet. Add one under Configurations → Shipments first.');
+    return;
+  }
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
+  const optionsHtml = `<option value="">Select…</option>` + locations.map(l =>
+    `<option value="${l.Id}" ${String(l.Id)===String(defaultLocationId)?'selected':''}>${l.LocationName}</option>`).join('');
   overlay.innerHTML = `<div class="modal">
     <h3>Confirm delivery</h3>
-    <p style="color:var(--text-dim);font-size:13px;margin:-6px 0 14px;">Pick the scheduled delivery date. This order becomes visible for picking in the warehouse app automatically once its shipment day arrives.</p>
-    <div class="field"><label>Scheduled delivery date</label><input type="date" id="scheduleDateInput" value="${defaultDate||''}" style="width:100%;" autofocus></div>
-    <span class="msg err" id="scheduleDateErr" style="display:none;padding:6px 0 0;">Pick a date.</span>
+    <p style="color:var(--text-dim);font-size:13px;margin:-6px 0 14px;">Pick the delivery location and scheduled delivery date. This order becomes visible for picking in the warehouse app automatically once its shipment day arrives.</p>
+    <div class="field"><label>Delivery location</label><select id="scheduleLocationInput" style="width:100%;">${optionsHtml}</select></div>
+    <div class="field" style="margin-top:10px;"><label>Scheduled delivery date</label><input type="date" id="scheduleDateInput" value="${defaultDate||''}" style="width:100%;"></div>
+    <span class="msg err" id="scheduleDateErr" style="display:none;padding:6px 0 0;">Pick a delivery location and a date.</span>
     <div class="form-foot" style="margin-top:10px;">
       <button class="btn primary" id="scheduleDateConfirm" style="flex:1;">Confirm delivery</button>
       <button class="btn" id="scheduleDateCancel">Cancel</button>
     </div>
   </div>`;
   document.body.appendChild(overlay);
-  const input = document.getElementById('scheduleDateInput');
+  const dateInput = document.getElementById('scheduleDateInput');
+  const locationInput = document.getElementById('scheduleLocationInput');
   const err = document.getElementById('scheduleDateErr');
   overlay.onclick = (e) => { if(e.target === overlay) overlay.remove(); };
   document.getElementById('scheduleDateCancel').onclick = () => overlay.remove();
   document.getElementById('scheduleDateConfirm').onclick = () => {
-    if(!input.value){ err.style.display = ''; input.focus(); return; }
+    if(!locationInput.value || !dateInput.value){ err.style.display = ''; (locationInput.value ? dateInput : locationInput).focus(); return; }
     overlay.remove();
-    onSubmit(input.value);
+    onSubmit(dateInput.value, locationInput.value);
   };
 }
 
@@ -1784,7 +1845,8 @@ async function renderSalesOrderDetail(){
           ${statusActions.map(a => `<button class="btn${a.primary?' primary':''}" id="${a.id}">${a.label}</button>`).join('')}
           ${canCancel ? `<button class="btn" id="cancelSOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>` : ''}
         </div></div>
-      <div class="batch-bar" style="flex-wrap:wrap;"><label>Ship date</label><span>${header?header.ShipDate:''}</span>
+      <div class="batch-bar" style="flex-wrap:wrap;"><label>Creation date</label><span>${header?header.ShipDate:''}</span>
+        <label>Delivery location</label><span>${header&&header.DeliveryLocationName?header.DeliveryLocationName:'—'}</span>
         <label>Scheduled delivery</label><span>${header&&header.ScheduledDate?header.ScheduledDate:'—'}</span>
         <label>Shipment day</label><span>${header&&header.ShipmentDay?header.ShipmentDay:'—'}</span>
         <label>Status</label><span>${soStatusChip(status)}</span>
@@ -1803,9 +1865,9 @@ async function renderSalesOrderDetail(){
       if(!btn) return;
       btn.onclick = async () => {
         if(a.schedule){
-          openScheduleDeliveryModal(header && header.ScheduledDate, async (scheduledDate) => {
+          openScheduleDeliveryModal(header && header.ScheduledDate, header && header.DeliveryLocationId, async (scheduledDate, deliveryLocationId) => {
             btn.disabled = true;
-            try{ await apiPost('scheduleSODelivery', { soNumber, scheduledDate }); renderSalesOrderDetail(); }
+            try{ await apiPost('scheduleSODelivery', { soNumber, scheduledDate, deliveryLocationId }); renderSalesOrderDetail(); }
             catch(e){ alert(e.message); btn.disabled = false; }
           });
           return;
@@ -3219,6 +3281,95 @@ function openSupplierModal(s){
       else await apiPost('addSupplier', f);
       msg.className='msg ok'; msg.textContent='Saved.';
       setTimeout(() => { closeModalOverlay('supplierOverlay'); renderSuppliers(); }, 400);
+    }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+  };
+}
+
+async function renderDeliveryLocations(){
+  $main.innerHTML = viewHead('Shipments', 'Delivery locations and their shipment transit time from your warehouse. "Confirm delivery" on a Sales Order picks from this list.') + panelShell('loading');
+  let rows, settings;
+  try{ [rows, settings] = await Promise.all([ensureDeliveryLocations(true), getSettings().catch(() => ({}))]); }
+  catch(e){ setPanel(errorState(e)); return; }
+  rows = rows.slice().sort((a,b) => (a.LocationName||'').localeCompare(b.LocationName||''));
+  const warehouseName = settings.warehouse_name || 'Warehouse';
+  const rowsHtml = rows.map(l => `
+    <tr data-id="${l.Id}">
+      <td>${l.LocationName||''}</td>
+      <td style="white-space:normal;max-width:220px;font-size:12px;color:var(--text-dim);">${l.LocationAddress||''}</td>
+      <td>${l.LocationLink ? `<a href="${l.LocationLink}" target="_blank" rel="noopener" style="color:var(--blue);">Link</a>` : ''}</td>
+      <td class="num">${l.ShipmentDays ?? ''}</td>
+      <td>${l.Status === 'Archived' ? '<span class="chip">Archived</span>' : '<span class="chip green">Active</span>'}</td>
+      <td style="white-space:nowrap;">
+        <button class="btn" data-act="edit">Edit</button>
+        <button class="btn" data-act="${l.Status === 'Archived' ? 'unarchive' : 'archive'}">${l.Status === 'Archived' ? 'Unarchive' : 'Archive'}</button>
+        <button class="btn" data-act="delete" style="color:var(--red);">Delete</button>
+      </td>
+    </tr>`).join('');
+  setPanel(`
+    <div class="panel-head"><h3>${rows.length} delivery location${rows.length===1?'':'s'}</h3>
+      <button class="btn primary" id="deliveryLocationAddBtn">Add delivery location</button></div>
+    ${rows.length ? `<table><thead><tr><th>Location name</th><th>Address</th><th>Link</th><th class="num">Shipment days from ${warehouseName}</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rowsHtml}</tbody></table>`
+      : emptyState('No delivery locations yet — add one so Sales Orders can pick it when confirming delivery.')}
+  `);
+  document.getElementById('deliveryLocationAddBtn').onclick = () => openDeliveryLocationModal(null, warehouseName);
+  document.querySelectorAll('#panelBody tr[data-id] button[data-act]').forEach(btn => {
+    btn.onclick = async () => {
+      const tr = btn.closest('tr');
+      const id = tr.dataset.id;
+      const l = rows.find(r => String(r.Id) === String(id));
+      const act = btn.dataset.act;
+      if(act === 'edit') return openDeliveryLocationModal(l, warehouseName);
+      if(act === 'archive' || act === 'unarchive'){
+        try{ await apiPost(act === 'archive' ? 'archiveDeliveryLocation' : 'unarchiveDeliveryLocation', { id }); renderDeliveryLocations(); }
+        catch(e){ alert(e.message); }
+        return;
+      }
+      if(act === 'delete'){
+        if(!confirm(`Delete delivery location "${l.LocationName}"? This can't be undone.`)) return;
+        try{ await apiPost('deleteDeliveryLocation', { id }); renderDeliveryLocations(); }
+        catch(e){ alert(e.message); }
+      }
+    };
+  });
+}
+function openDeliveryLocationModal(l, warehouseName){
+  const isEdit = !!l;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'deliveryLocationOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="panel-head"><h3>${isEdit ? 'Edit delivery location' : 'Add delivery location'}</h3></div>
+      <form class="form" id="deliveryLocationForm">
+        <div class="field span2"><label>Location name</label><input type="text" name="locationName" required value="${isEdit ? (l.LocationName||'').replace(/"/g,'&quot;') : ''}"></div>
+        <div class="field span2"><label>Location address</label><input type="text" name="locationAddress" value="${isEdit ? (l.LocationAddress||'').replace(/"/g,'&quot;') : ''}"></div>
+        <div class="field span2"><label>Location link</label><input type="url" name="locationLink" placeholder="https://…" value="${isEdit ? (l.LocationLink||'').replace(/"/g,'&quot;') : ''}"></div>
+        <div class="field"><label>Shipment days from ${warehouseName}</label><input type="number" name="shipmentDays" min="0" step="0.5" required value="${isEdit && l.ShipmentDays != null ? l.ShipmentDays : ''}"></div>
+        <div class="form-foot">
+          <button class="btn primary" type="submit">${isEdit ? 'Save' : 'Add delivery location'}</button>
+          <button class="btn" type="button" id="deliveryLocationCancelBtn">Cancel</button>
+          <span class="msg" id="deliveryLocationMsg"></span>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('deliveryLocationOverlay'); };
+  document.getElementById('deliveryLocationCancelBtn').onclick = () => closeModalOverlay('deliveryLocationOverlay');
+  const locForm = document.getElementById('deliveryLocationForm');
+  locForm.addEventListener('keydown', (e) => {
+    if(e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') e.preventDefault();
+  });
+  locForm.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = Object.fromEntries(new FormData(ev.target));
+    const msg = document.getElementById('deliveryLocationMsg');
+    msg.className='msg'; msg.textContent='Saving…';
+    try{
+      if(isEdit) await apiPost('updateDeliveryLocation', Object.assign(f, { id: l.Id }));
+      else await apiPost('addDeliveryLocation', f);
+      msg.className='msg ok'; msg.textContent='Saved.';
+      setTimeout(() => { closeModalOverlay('deliveryLocationOverlay'); renderDeliveryLocations(); }, 400);
     }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
   };
 }
