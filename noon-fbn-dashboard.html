@@ -235,6 +235,21 @@ async function signOut(){
   setConn(false, 'signed out');
 }
 
+// Render-generation guards for the SO/PO detail screens: both append their
+// line-items + "Add items" panels straight to #main with plain appendChild
+// calls (after their own awaits), separately from the reset-and-replace
+// $main.innerHTML at the top of each function. If the same detail screen
+// gets re-entered while an earlier call is still awaiting (a fast
+// double-click on a row, or one status action's re-render landing while a
+// previous one hasn't resolved yet), each call's panels would stack up
+// instead of cleanly replacing — a stale call finishing last leaves its own
+// panels sitting alongside (or after) the current one's, which looks like a
+// duplicated line-items table. Each function bumps its own token before
+// starting and bails out (without touching the DOM) if a newer call has
+// since started.
+let soRenderToken = 0;
+let poRenderToken = 0;
+
 const tableCache = {};
 const CACHE_TTL = 20000; // 20s — long enough that bouncing between modules feels instant
 function invalidateCache(action){
@@ -1904,12 +1919,14 @@ async function openEditSOModal(header){
 async function renderSalesOrderDetail(){
   state.view = 'salesorders'; persistView();
   const soNumber = state.selectedSO;
+  const myToken = ++soRenderToken;
   $main.innerHTML = `<div class="view-head"><a href="#" id="backToSO" style="color:var(--blue);font-size:12.5px;text-decoration:none;">← All Sales Orders</a>
     <h2 class="view-title" style="margin-top:8px;">${soNumber}</h2></div>` + panelShell('loading');
   document.getElementById('backToSO').onclick = (e) => { e.preventDefault(); state.selectedSO = null; renderSalesOrders(); };
   try{
     const catalog = await ensureCatalog();
     const [orders, lines] = await Promise.all([apiGet('salesOrder'), apiGet('salesOrderLine')]);
+    if(myToken !== soRenderToken) return; // a newer render started while we were fetching — don't append stale panels
     const header = orders.find(o => o.SONumber === soNumber);
     const myLines = lines.filter(l => l.SONumber === soNumber);
     const status = header ? header.Status : '';       // effective/display status
@@ -2429,12 +2446,14 @@ function openEditPOModal(header, poNumber){
 async function renderPurchaseOrderDetail(){
   state.view = 'purchaseorders'; persistView();
   let poNumber = state.selectedPO;
+  const myToken = ++poRenderToken;
   $main.innerHTML = `<div class="view-head"><a href="#" id="backToPO" style="color:var(--blue);font-size:12.5px;text-decoration:none;">← All Purchase Orders</a>
     <h2 class="view-title" style="margin-top:8px;">${poNumber}</h2></div>` + panelShell('loading');
   document.getElementById('backToPO').onclick = (e) => { e.preventDefault(); state.selectedPO = null; renderPurchaseOrders(); };
   try{
     const catalog = await ensureCatalog();
     const [orders, lines] = await Promise.all([apiGet('purchaseOrder'), apiGet('purchaseOrderLine')]);
+    if(myToken !== poRenderToken) return; // a newer render started while we were fetching — don't append stale panels
     const header = orders.find(o => o.PONumber === poNumber);
     const myLines = lines.filter(l => l.PONumber === poNumber);
     // Status workflow: Open -> RFQ -> Purchase Order -> Received -> Validated,
