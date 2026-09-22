@@ -682,12 +682,13 @@ async function renderReceipt(){
     // common case is receiving exactly what was confirmed, so staff only
     // need to edit this down for a partial/short delivery.
     const rowsHtml = lines.map(l => `
-      <div class="line-row" data-zsku="${l.zSKU}" data-linenum="${l.LineNum}">
+      <div class="line-row" data-zsku="${l.zSKU}" data-linenum="${l.LineNum}" data-confirmed-total="0">
         <div class="line-top">
           <div><div class="line-sku">${l.SKU}</div></div>
           <div class="line-planned">confirmed: ${fmt(l.ConfirmedQty)} · received so far: ${fmt(l.QtyReceived)}</div>
         </div>
         <div class="line-fields">
+          <span class="bankedQty" style="display:none;color:var(--text-dim);font-size:14px;"></span>
           <input type="number" class="receiveInput" min="0" value="${Number(l.ConfirmedQty)||0}" placeholder="Qty now">
           <button class="btn confirmLineBtn" type="button">Confirm</button>
         </div>
@@ -707,21 +708,36 @@ async function renderReceipt(){
       </div>
     `);
 
-    // "Confirm" just hides a checked-off row from view — it does NOT save
-    // anything. The row (and its qty value) stays in the DOM so Received /
-    // Received and Validate still pick it up; if the user navigates away,
-    // refreshes, or closes the browser before pressing one of those buttons,
-    // nothing was ever written and the confirm has no lasting effect.
+    // "Confirm" banks whatever's in the qty input into the row's running
+    // total (data-confirmed-total) and hides the row — it does NOT save
+    // anything to the database. If the same barcode gets scanned again, the
+    // row reappears with the banked total shown as "<banked> +" next to a
+    // fresh, empty input, so a second count adds on top rather than
+    // overwriting it; pressing Confirm again banks the new sum. Either way,
+    // nothing is written until Received / Received and Validate is pressed;
+    // back out, refresh, or close the browser first and none of this sticks.
     const totalLines = document.querySelectorAll('.line-row').length;
     const updateConfirmProgress = () => {
       const confirmedCount = document.querySelectorAll('.line-row.confirmed-hidden').length;
       const p = document.getElementById('confirmProgress');
       if(p) p.textContent = `${confirmedCount} of ${totalLines} confirmed`;
     };
+    const updateBankedLabel = (row) => {
+      const banked = Number(row.dataset.confirmedTotal || 0);
+      const label = row.querySelector('.bankedQty');
+      if(banked > 0){ label.textContent = `${fmt(banked)} +`; label.style.display = ''; }
+      else { label.style.display = 'none'; }
+    };
     document.querySelectorAll('.confirmLineBtn').forEach(btn => {
       btn.onclick = () => {
-        btn.closest('.line-row').classList.add('confirmed-hidden');
-        btn.closest('.line-row').style.display = 'none';
+        const row = btn.closest('.line-row');
+        const inp = row.querySelector('.receiveInput');
+        const banked = Number(row.dataset.confirmedTotal || 0) + Number(inp.value || 0);
+        row.dataset.confirmedTotal = banked;
+        inp.value = '0';
+        updateBankedLabel(row);
+        row.classList.add('confirmed-hidden');
+        row.style.display = 'none';
         updateConfirmProgress();
       };
     });
@@ -734,11 +750,16 @@ async function renderReceipt(){
       if(!z){ scanInput.value = ''; alert('No catalog match for: ' + code); return; }
       const row = document.querySelector(`.line-row[data-zsku="${z}"]`);
       if(!row){ scanInput.value = ''; alert('That SKU is not on this order.'); return; }
+      const wasHidden = row.classList.contains('confirmed-hidden');
       row.classList.remove('confirmed-hidden');
       row.style.display = '';
       row.classList.add('highlight');
       row.scrollIntoView({ behavior:'smooth', block:'center' });
       const inp = row.querySelector('.receiveInput');
+      // Coming back to an already-confirmed row: start the new count at 0
+      // (the banked amount is shown separately as "<banked> +") rather than
+      // re-offering the original Confirmed qty default, which would double it.
+      if(wasHidden) inp.value = '0';
       inp.focus(); inp.select();
       scanInput.value = '';
       updateConfirmProgress();
@@ -746,13 +767,14 @@ async function renderReceipt(){
     scanInput.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); handleScan(scanInput.value.trim()); } };
     document.getElementById('scanCamBtn').onclick = () => openScanModal(handleScan);
 
-    // Shared by both buttons: saves every line with a qty > 0 entered.
-    // Returns false (and shows an error) if nothing was entered at all.
+    // Shared by both buttons: saves every line whose banked total + current
+    // input value is > 0. Returns false (and shows an error) if the whole
+    // order has nothing to save.
     async function saveReceivedQuantities(msg){
       const rows = document.querySelectorAll('.line-row');
       let any = false;
       for(const row of rows){
-        const qty = Number(row.querySelector('.receiveInput').value || 0);
+        const qty = Number(row.dataset.confirmedTotal || 0) + Number(row.querySelector('.receiveInput').value || 0);
         if(qty <= 0) continue;
         any = true;
         await apiPost('updateWarehouseReceipt', { poNumber, lineNum: row.dataset.linenum, receivedQty: qty });
@@ -780,7 +802,8 @@ async function renderReceipt(){
       const msg = document.getElementById('receiptMsg');
       // Check there's something to save before bothering with the wizard —
       // no point asking for an invoice number just to fail right after.
-      const hasQty = Array.from(document.querySelectorAll('.receiveInput')).some(inp => Number(inp.value||0) > 0);
+      const hasQty = Array.from(document.querySelectorAll('.line-row')).some(row =>
+        (Number(row.dataset.confirmedTotal||0) + Number(row.querySelector('.receiveInput').value||0)) > 0);
       if(!hasQty){ msg.className = 'msg err'; msg.textContent = 'Enter at least one qty > 0.'; return; }
       openInvoiceWizard(async (invoiceNumber) => {
         receivedBtn.disabled = true; receivedValidateBtn.disabled = true;
