@@ -1903,19 +1903,17 @@ async function renderSalesOrderDetail(){
 
     setPanel(`
       <div class="panel-head"><h3>Order summary</h3>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
-          <div style="display:flex;gap:8px;">
-            ${statusActions.map(a => `<button class="btn${a.primary?' primary':''}" id="${a.id}">${a.label}</button>`).join('')}
-            ${canCancel ? `<button class="btn" id="cancelSOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>` : ''}
-          </div>
-          <button class="btn" id="editSOBtn">Edit</button>
+        <div style="display:flex;gap:8px;">
+          ${statusActions.map(a => `<button class="btn${a.primary?' primary':''}" id="${a.id}">${a.label}</button>`).join('')}
+          ${canCancel ? `<button class="btn" id="cancelSOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>` : ''}
         </div></div>
       <div class="batch-bar" style="flex-wrap:wrap;"><label>Creation date</label><span>${header?header.ShipDate:''}</span>
         <label>Delivery location</label><span>${header&&header.DeliveryLocationName?header.DeliveryLocationName:'—'}</span>
         <label>Scheduled delivery</label><span>${header&&header.ScheduledDate?header.ScheduledDate:'—'}</span>
         <label>Shipment day</label><span>${header&&header.ShipmentDay?header.ShipmentDay:'—'}</span>
         <label>Status</label><span>${soStatusChip(status)}</span>
-        <label>Expected sellable</label><span>${header?header.ExpectedSellableDate:''}</span></div>
+        <label>Expected sellable</label><span>${header?header.ExpectedSellableDate:''}</span>
+        <button class="btn" id="editSOBtn" style="margin-left:auto;">Edit</button></div>
     `);
 
     const cancelBtn = document.getElementById('cancelSOBtn');
