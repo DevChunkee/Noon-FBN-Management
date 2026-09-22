@@ -1903,10 +1903,12 @@ async function renderSalesOrderDetail(){
 
     setPanel(`
       <div class="panel-head"><h3>Order summary</h3>
-        <div style="display:flex;gap:8px;">
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+          <div style="display:flex;gap:8px;">
+            ${statusActions.map(a => `<button class="btn${a.primary?' primary':''}" id="${a.id}">${a.label}</button>`).join('')}
+            ${canCancel ? `<button class="btn" id="cancelSOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>` : ''}
+          </div>
           <button class="btn" id="editSOBtn">Edit</button>
-          ${statusActions.map(a => `<button class="btn${a.primary?' primary':''}" id="${a.id}">${a.label}</button>`).join('')}
-          ${canCancel ? `<button class="btn" id="cancelSOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>` : ''}
         </div></div>
       <div class="batch-bar" style="flex-wrap:wrap;"><label>Creation date</label><span>${header?header.ShipDate:''}</span>
         <label>Delivery location</label><span>${header&&header.DeliveryLocationName?header.DeliveryLocationName:'—'}</span>
