@@ -2164,6 +2164,21 @@ async function renderPurchaseOrderDetail(){
             await apiPost(a.requireAction, { poNumber, value: reqInput.value.trim() });
             savedRequiredField = true;
           }
+          if(a.id === 'confirmQuoteBtn'){
+            // Confirming the quotation is the moment Confirmed qty stops
+            // being editable per-line and starts being read everywhere
+            // (warehouse receiving, totals) as "confirmed_qty or Qty
+            // ordered". Write that same fallback value into confirmed_qty
+            // now, for every line that hasn't been individually overridden,
+            // so the stored data matches what's displayed instead of only
+            // ever existing as a display-time fallback. Must happen while
+            // still in RFQ — updatePOConfirmation only allows writes there.
+            for(const l of enrichedLines){
+              if(!l._isConfirmed){
+                await apiPost('updatePOConfirmation', { poNumber, lineNum: l.LineNum, confirmedQty: l._confirmedVal });
+              }
+            }
+          }
           await apiPost('setPOStatus', { poNumber, status: a.to }); renderPurchaseOrderDetail();
         }
         catch(e){
