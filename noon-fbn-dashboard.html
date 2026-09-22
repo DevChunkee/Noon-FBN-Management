@@ -2150,6 +2150,17 @@ async function renderPurchaseOrderDetail(){
       const btn = document.getElementById(a.id);
       if(!btn) return;
       btn.onclick = async () => {
+        // Qty ordered / Confirmed qty / Qty received edits are saved via the
+        // separate "Save changes" button on the line-items table, not by
+        // this status button — so a dirty, unsaved line edit would otherwise
+        // be silently discarded the moment the status change re-fetches and
+        // re-renders the lines. Block and point at Save changes instead.
+        const dirtyLineEdit = Array.from(document.querySelectorAll('.qtyOrderedInput, .confirmQtyInput, .qtyReceivedInput'))
+          .some(inp => !inp.disabled && inp.value !== inp.dataset.original);
+        if(dirtyLineEdit){
+          alert('You have unsaved line-item changes (Qty ordered / Confirmed qty / Qty received). Click "Save changes" first, then try again.');
+          return;
+        }
         let reqInput = null;
         if(a.require){
           reqInput = document.getElementById(a.require);
@@ -2249,7 +2260,14 @@ async function renderPurchaseOrderDetail(){
           }
           const receivedInput = tr.querySelector('.qtyReceivedInput');
           if(receivedInput && !receivedInput.disabled && receivedInput.value !== receivedInput.dataset.original){
-            await apiPost('updateWarehouseReceipt', { poNumber, lineNum, receivedQty: receivedInput.value });
+            // The field shows/edits the running TOTAL received on this line,
+            // but updateWarehouseReceipt (shared with the warehouse app's
+            // "Qty now" flow, and the ledger trigger it feeds) is additive —
+            // it adds whatever's sent to the existing qty_received. Sending
+            // the new total as-is would double-count anything already
+            // received, so send the delta (new total - old total) instead.
+            const delta = Number(receivedInput.value || 0) - Number(receivedInput.dataset.original || 0);
+            if(delta !== 0) await apiPost('updateWarehouseReceipt', { poNumber, lineNum, receivedQty: delta });
           }
         }
         renderPurchaseOrderDetail();
