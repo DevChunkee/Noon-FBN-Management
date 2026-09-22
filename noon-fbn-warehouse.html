@@ -678,21 +678,25 @@ async function renderReceipt(){
       return;
     }
 
-    // Received qty defaults to the full Confirmed qty from the PO line — the
-    // common case is receiving exactly what was confirmed, so staff only
-    // need to edit this down for a partial/short delivery.
-    const rowsHtml = lines.map(l => `
+    // Received qty defaults to the PO line's own Confirmed qty — straight
+    // from confirmed_qty, not a fallback to Qty ordered, so a line the
+    // office hasn't confirmed a quantity for defaults to 0 here rather than
+    // guessing at the ordered amount.
+    const rowsHtml = lines.map(l => {
+      const confirmedQty = Number(l.ConfirmedQty) || 0;
+      return `
       <div class="line-row" data-zsku="${l.zSKU}" data-linenum="${l.LineNum}" data-confirmed-total="0">
         <div class="line-top">
           <div><div class="line-sku">${l.SKU}</div></div>
-          <div class="line-planned">confirmed: ${fmt(l.ConfirmedQty)} · received so far: ${fmt(l.QtyReceived)}</div>
+          <div class="line-planned">confirmed: ${fmt(confirmedQty)} · received so far: ${fmt(l.QtyReceived)}</div>
         </div>
         <div class="line-fields">
           <span class="bankedQty" style="display:none;color:var(--text-dim);font-size:14px;"></span>
-          <input type="number" class="receiveInput" min="0" value="${Number(l.ConfirmedQty)||0}" placeholder="Qty now">
+          <input type="number" class="receiveInput" min="0" value="${confirmedQty}" placeholder="Qty now">
           <button class="btn confirmLineBtn" type="button">Confirm</button>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
 
     setPanel(`
       <div class="scan-bar">
