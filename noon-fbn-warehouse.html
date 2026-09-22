@@ -678,12 +678,18 @@ async function renderReceipt(){
       return;
     }
 
-    // Received qty defaults to the PO line's own Confirmed qty — straight
-    // from confirmed_qty, not a fallback to Qty ordered, so a line the
-    // office hasn't confirmed a quantity for defaults to 0 here rather than
-    // guessing at the ordered amount.
+    // Received qty defaults to the PO line's Confirmed qty as shown on the
+    // dashboard's Order summary screen. The raw confirmed_qty column is
+    // null unless the office has overwritten that specific line — it's
+    // designed to fall back to Qty ordered (that's what "Confirm Quotation"
+    // on the dashboard actually does: it moves the PO to Purchase Order
+    // stage without writing a per-line confirmed_qty, and the dashboard's
+    // "Confirmed qty" column shows the Qty ordered fallback for every line
+    // that wasn't individually overridden). Matching that fallback here
+    // keeps this screen's numbers consistent with what the office sees.
     const rowsHtml = lines.map(l => {
-      const confirmedQty = Number(l.ConfirmedQty) || 0;
+      const hasConfirmedQty = l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined;
+      const confirmedQty = hasConfirmedQty ? Number(l.ConfirmedQty) : Number(l.QtyOrdered||0);
       return `
       <div class="line-row" data-zsku="${l.zSKU}" data-linenum="${l.LineNum}" data-confirmed-total="0">
         <div class="line-top">
