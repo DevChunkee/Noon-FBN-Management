@@ -371,6 +371,18 @@ async function apiPost(action, payload){
         : error.message);
       result = { ok:true }; break;
     }
+    case 'updatePODate': {
+      if(!payload.value) throw new Error('Date can\'t be blank.');
+      const { error } = await client.from('purchase_orders').update({ po_date: payload.value }).eq('po_number', payload.poNumber);
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    case 'updatePOReceivedDate': {
+      const { error } = await client.from('purchase_orders').update({ received_date: payload.value || null }).eq('po_number', payload.poNumber);
+      if(error) throw new Error(error.code === '42703'
+        ? 'The database doesn\'t have a received_date column yet — run migration 12_po_received_date.sql in Supabase, then try again.'
+        : error.message);
+      result = { ok:true }; break;
+    }
     case 'renamePurchaseOrder': {
       const { data: po, error: poErr } = await client.from('purchase_orders').select('status')
         .eq('po_number', payload.poNumber).single();
@@ -2255,6 +2267,77 @@ async function openCreatePOModal(){
   };
 }
 
+// "Edit" on the PO Order summary panel — same pattern as the Sales Order
+// screen's Edit button: one modal for every header field instead of
+// inline-editable spans. The per-field stage restrictions from before
+// (PO number only in Open, Quotation # only in RFQ, Invoice # only from
+// Purchase Order onward) are still enforced server-side by their
+// respective apiPost cases and surface here as the same friendly errors.
+// Saves are sequential and stop at the first error, so anything already
+// saved (e.g. a rename) sticks even if a later field is rejected.
+function openEditPOModal(header, poNumber){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'editPOOverlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="panel-head"><h3>Edit Purchase Order</h3></div>
+      <form class="form" id="editPOForm">
+        <div class="field"><label>PO number</label><input type="text" name="newPoNumber" required value="${poNumber.replace(/"/g,'&quot;')}"></div>
+        <div class="field"><label>Date</label><input type="date" name="poDate" required value="${header?header.PODate:''}"></div>
+        <div class="field"><label>Quotation number</label><input type="text" name="quotationNumber" value="${((header&&header.QuotationNumber)||'').replace(/"/g,'&quot;')}"></div>
+        <div class="field"><label>Invoice number</label><input type="text" name="invoiceNumber" value="${((header&&header.InvoiceNumber)||'').replace(/"/g,'&quot;')}"></div>
+        <div class="field"><label>Received date</label><input type="date" name="receivedDate" value="${(header&&header.ReceivedDate)||''}"></div>
+        <div class="form-foot">
+          <button class="btn primary" type="submit">Save</button>
+          <button class="btn" type="button" id="editPOCancelBtn">Cancel</button>
+          <span class="msg" id="editPOMsg"></span>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('editPOOverlay'); };
+  document.getElementById('editPOCancelBtn').onclick = () => closeModalOverlay('editPOOverlay');
+  const editForm = document.getElementById('editPOForm');
+  editForm.addEventListener('keydown', (e) => {
+    if(e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') e.preventDefault();
+  });
+  editForm.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = Object.fromEntries(new FormData(ev.target));
+    const msg = document.getElementById('editPOMsg');
+    msg.className='msg'; msg.textContent='Saving…';
+    let currentPoNumber = poNumber;
+    try{
+      const newNumber = (f.newPoNumber||'').trim();
+      if(newNumber !== currentPoNumber){
+        const r = await apiPost('renamePurchaseOrder', { poNumber: currentPoNumber, newPoNumber: newNumber });
+        currentPoNumber = r.newPoNumber;
+        state.selectedPO = currentPoNumber;
+      }
+      if(f.poDate !== (header?header.PODate:'')){
+        await apiPost('updatePODate', { poNumber: currentPoNumber, value: f.poDate });
+      }
+      if((f.quotationNumber||'').trim() !== ((header&&header.QuotationNumber)||'')){
+        await apiPost('updatePOQuotationNumber', { poNumber: currentPoNumber, value: (f.quotationNumber||'').trim() });
+      }
+      if((f.invoiceNumber||'').trim() !== ((header&&header.InvoiceNumber)||'')){
+        await apiPost('updatePOInvoiceNumber', { poNumber: currentPoNumber, value: (f.invoiceNumber||'').trim() });
+      }
+      if((f.receivedDate||'') !== ((header&&header.ReceivedDate)||'')){
+        await apiPost('updatePOReceivedDate', { poNumber: currentPoNumber, value: f.receivedDate || null });
+      }
+      msg.className='msg ok'; msg.textContent='Saved.';
+      setTimeout(() => { closeModalOverlay('editPOOverlay'); renderPurchaseOrderDetail(); }, 400);
+    }catch(e){
+      msg.className='msg err'; msg.textContent = e.message;
+      // A rename may have already gone through before a later field failed —
+      // point the screen at the new number so it isn't stuck on a stale one.
+      if(currentPoNumber !== poNumber) state.selectedPO = currentPoNumber;
+    }
+  };
+}
+
 async function renderPurchaseOrderDetail(){
   state.view = 'purchaseorders'; persistView();
   let poNumber = state.selectedPO;
@@ -2286,9 +2369,11 @@ async function renderPurchaseOrderDetail(){
     const qtyReceivedEditableStage = isPO;     // Qty received only editable in the Purchase Order stage
     const showConfirmedCol = !isOpen;          // Confirmed qty column hidden until RFQ (and beyond)
     const showReceivedCol = isPO || isReceived || isValidated; // Qty received column hidden until Purchase Order (and beyond)
-    const quotationEditableStage = isRFQ;      // Quotation number only editable in the RFQ stage, required to Confirm Quotation
-    const invoiceEditableStage = isPO || isReceived; // Invoice number editable from Purchase Order onward, required to Validate
-    const poNumberEditableStage = isOpen;      // PO number only editable in the Open (draft) stage
+    // PO number / Quotation # / Invoice # / Received date are no longer
+    // inline-editable here — they're all edited via the "Edit" button/modal
+    // below (openEditPOModal), same pattern as the Sales Order screen. The
+    // per-field stage restrictions (e.g. quotation # only in RFQ) still
+    // apply server-side in their respective apiPost cases.
     const enrichedLines = myLines.map(l => {
       const isConfirmed = l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined;
       const confirmedVal = isConfirmed ? Number(l.ConfirmedQty) : Number(l.QtyOrdered||0);
@@ -2334,16 +2419,16 @@ async function renderPurchaseOrderDetail(){
       statusActions.push({ id:'confirmOrderBtn', label:'Confirm Order', primary:true, to:'RFQ', confirmMsg:'Confirm the Qty ordered and send this as an RFQ? Qty ordered will lock.' });
     }
     if(isRFQ){
-      statusActions.push({ id:'confirmQuoteBtn', label:'Confirm Quotation', primary:true, to:'Purchase Order', confirmMsg:'Confirm the supplier\'s quotation? Confirmed qty becomes editable.', require:'quotationNumberInput', requireMsg:'Enter a Quotation number before confirming the quotation.', requireAction:'updatePOQuotationNumber' });
+      statusActions.push({ id:'confirmQuoteBtn', label:'Confirm Quotation', primary:true, to:'Purchase Order', confirmMsg:'Confirm the supplier\'s quotation? Confirmed qty becomes editable.', requireField:'QuotationNumber', requireMsg:'Enter a Quotation number (via Edit) before confirming the quotation.' });
       statusActions.push({ id:'backToOpenBtn', label:'Back to Open', primary:false, to:'Open', confirmMsg:'Move this PO back to Open? Qty ordered becomes editable again.' });
     }
     if(isPO){
       statusActions.push({ id:'receivedBtn', label:'Received', primary:true, to:'Received', confirmMsg:'Mark this PO as Received?' });
-      statusActions.push({ id:'receivedValidateBtn', label:'Received and Validate', primary:true, to:'Validated', confirmMsg:'Mark this PO as Received and Validated in one step?', require:'invoiceNumberInput', requireMsg:'Enter an Invoice number before validating.', requireAction:'updatePOInvoiceNumber' });
+      statusActions.push({ id:'receivedValidateBtn', label:'Received and Validate', primary:true, to:'Validated', confirmMsg:'Mark this PO as Received and Validated in one step?', requireField:'InvoiceNumber', requireMsg:'Enter an Invoice number (via Edit) before validating.' });
       statusActions.push({ id:'backToRFQBtn', label:'Back to RFQ', primary:false, to:'RFQ', confirmMsg:'Move this PO back to RFQ?' });
     }
     if(isReceived){
-      statusActions.push({ id:'validateBtn', label:'Validate', primary:true, to:'Validated', confirmMsg:'Validate this PO? This is its final stage.', require:'invoiceNumberInput', requireMsg:'Enter an Invoice number before validating.', requireAction:'updatePOInvoiceNumber' });
+      statusActions.push({ id:'validateBtn', label:'Validate', primary:true, to:'Validated', confirmMsg:'Validate this PO? This is its final stage.', requireField:'InvoiceNumber', requireMsg:'Enter an Invoice number (via Edit) before validating.' });
       statusActions.push({ id:'backToPOBtn', label:'Back to Purchase Order', primary:false, to:'Purchase Order', confirmMsg:'Move this PO back to Purchase Order?' });
     }
     if(isValidated){
@@ -2359,19 +2444,14 @@ async function renderPurchaseOrderDetail(){
           ${canCancel ? `<button class="btn" id="cancelPOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>` : ''}
         </div></div>
       <div class="batch-bar" style="flex-wrap:wrap;">
-        <label>PO number</label><span>${poNumberEditableStage
-          ? `<input type="text" id="poNumberInput" data-original="${poNumber.replace(/"/g,'&quot;')}" value="${poNumber.replace(/"/g,'&quot;')}" style="width:150px;">`
-          : poNumber}</span>
+        <label>PO number</label><span>${poNumber}</span>
         <label>Date</label><span>${header?header.PODate:''}</span>
         <label>Supplier</label><span>${header?header.Supplier:''}</span>
         <label>Status</label><span>${status}</span>
-        <label>Quotation #</label><span>${quotationEditableStage
-          ? `<input type="text" id="quotationNumberInput" data-original="${((header&&header.QuotationNumber)||'').replace(/"/g,'&quot;')}" value="${((header&&header.QuotationNumber)||'').replace(/"/g,'&quot;')}" placeholder="Required to confirm" style="width:150px;">`
-          : ((header&&header.QuotationNumber)||'—')}</span>
-        <label>Invoice #</label><span>${invoiceEditableStage
-          ? `<input type="text" id="invoiceNumberInput" data-original="${((header&&header.InvoiceNumber)||'').replace(/"/g,'&quot;')}" value="${((header&&header.InvoiceNumber)||'').replace(/"/g,'&quot;')}" placeholder="Required to validate" style="width:150px;">`
-          : ((header&&header.InvoiceNumber)||'—')}</span>
-        ${(poNumberEditableStage || quotationEditableStage || invoiceEditableStage) ? `<button class="btn" id="cancelHeaderBtn" style="display:none;">Cancel</button><button class="btn primary" id="saveHeaderBtn" style="display:none;">Save changes</button>` : ''}
+        <label>Quotation #</label><span>${(header&&header.QuotationNumber)||'—'}</span>
+        <label>Invoice #</label><span>${(header&&header.InvoiceNumber)||'—'}</span>
+        <label>Received date</label><span>${(header&&header.ReceivedDate)||'—'}</span>
+        <button class="btn" id="editPOBtn" style="margin-left:auto;">Edit</button>
       </div>
     `);
     const cancelBtn = document.getElementById('cancelPOBtn');
@@ -2380,49 +2460,7 @@ async function renderPurchaseOrderDetail(){
       try{ await apiPost('cancelPurchaseOrder', { poNumber }); renderPurchaseOrderDetail(); }
       catch(e){ alert(e.message); } // server blocks this if anything's already been received
     };
-    const poNumberInput = document.getElementById('poNumberInput');
-    const quotationInput = document.getElementById('quotationNumberInput');
-    const invoiceInput = document.getElementById('invoiceNumberInput');
-    const saveHeaderBtn = document.getElementById('saveHeaderBtn');
-    const cancelHeaderBtn = document.getElementById('cancelHeaderBtn');
-    // Quotation #/Invoice # are also picked up automatically by their gated
-    // status button (Confirm Quotation / Validate / Received and Validate)
-    // the first time they're filled in — so "Save changes" only needs to
-    // appear once there's an already-saved value being edited (2nd time
-    // onward). PO number has no such button, so it always counts.
-    function isHeaderFieldDirty(inp){
-      if(!inp || inp.value === inp.dataset.original) return false;
-      if(inp !== poNumberInput && inp.dataset.original === '') return false;
-      return true;
-    }
-    function checkHeaderDirty(){
-      if(!saveHeaderBtn) return;
-      const dirty = [poNumberInput, quotationInput, invoiceInput].some(isHeaderFieldDirty);
-      saveHeaderBtn.style.display = dirty ? '' : 'none';
-      if(cancelHeaderBtn) cancelHeaderBtn.style.display = dirty ? '' : 'none';
-    }
-    [poNumberInput, quotationInput, invoiceInput].forEach(inp => { if(inp) inp.addEventListener('input', checkHeaderDirty); });
-    if(cancelHeaderBtn) cancelHeaderBtn.onclick = () => {
-      [poNumberInput, quotationInput, invoiceInput].forEach(inp => { if(inp) inp.value = inp.dataset.original; });
-      checkHeaderDirty();
-    };
-    if(saveHeaderBtn) saveHeaderBtn.onclick = async () => {
-      saveHeaderBtn.disabled = true; saveHeaderBtn.textContent = 'Saving…';
-      try{
-        if(poNumberInput && poNumberInput.value.trim() !== poNumberInput.dataset.original){
-          const r = await apiPost('renamePurchaseOrder', { poNumber, newPoNumber: poNumberInput.value.trim() });
-          poNumber = r.newPoNumber;
-          state.selectedPO = poNumber;
-        }
-        if(quotationInput && quotationInput.value !== quotationInput.dataset.original){
-          await apiPost('updatePOQuotationNumber', { poNumber, value: quotationInput.value.trim() });
-        }
-        if(invoiceInput && invoiceInput.value !== invoiceInput.dataset.original){
-          await apiPost('updatePOInvoiceNumber', { poNumber, value: invoiceInput.value.trim() });
-        }
-        renderPurchaseOrderDetail();
-      }catch(e){ alert('Could not save: ' + e.message); saveHeaderBtn.disabled = false; saveHeaderBtn.textContent = 'Save changes'; checkHeaderDirty(); }
-    };
+    document.getElementById('editPOBtn').onclick = () => openEditPOModal(header, poNumber);
     statusActions.forEach(a => {
       const btn = document.getElementById(a.id);
       if(!btn) return;
@@ -2438,20 +2476,13 @@ async function renderPurchaseOrderDetail(){
           alert('You have unsaved line-item changes (Qty ordered / Confirmed qty / Qty received). Click "Save changes" first, then try again.');
           return;
         }
-        let reqInput = null;
-        if(a.require){
-          reqInput = document.getElementById(a.require);
-          const val = reqInput ? reqInput.value.trim() : '';
-          if(!val){ alert(a.requireMsg); if(reqInput) reqInput.focus(); return; }
+        if(a.requireField){
+          const val = header ? (header[a.requireField]||'').toString().trim() : '';
+          if(!val){ alert(a.requireMsg); return; }
         }
         if(!confirm(a.confirmMsg)) return;
         btn.disabled = true;
-        let savedRequiredField = false;
         try{
-          if(reqInput && a.requireAction && reqInput.value.trim() !== reqInput.dataset.original){
-            await apiPost(a.requireAction, { poNumber, value: reqInput.value.trim() });
-            savedRequiredField = true;
-          }
           if(a.id === 'confirmQuoteBtn'){
             // Confirming the quotation is the moment Confirmed qty stops
             // being editable per-line and starts being read everywhere
@@ -2491,11 +2522,6 @@ async function renderPurchaseOrderDetail(){
         catch(e){
           alert(e.message);
           btn.disabled = false;
-          // The field (Quotation #/Invoice #) may have saved successfully even
-          // though the status change itself then failed (e.g. a status
-          // migration hasn't been run yet) — re-render so that save shows up
-          // instead of looking like nothing happened.
-          if(savedRequiredField) renderPurchaseOrderDetail();
         }
       };
     });
