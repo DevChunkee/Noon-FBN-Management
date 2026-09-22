@@ -664,6 +664,10 @@ async function renderReceipt(){
     const [orders, allLines] = await Promise.all([apiGet('purchaseOrder', true), apiGet('purchaseOrderLine', true)]);
     const header = orders.find(o => o.PONumber === poNumber);
     const lines = allLines.filter(l => l.PONumber === poNumber);
+    // Once the PO record is in, swap the heading to the Quotation # (falls
+    // back to the PO # if no quotation number is on file yet).
+    const titleEl = document.querySelector('.view-title');
+    if(titleEl) titleEl.textContent = `Receipt — ${(header && header.QuotationNumber) || poNumber}`;
     if(!lines.length){ setPanel(emptyState('This order has no lines yet.')); return; }
     // This screen only accepts receipts while the PO is in the "Purchase
     // Order" stage — if it's moved on since this screen was opened (e.g. a
@@ -684,7 +688,7 @@ async function renderReceipt(){
           <div class="line-planned">confirmed: ${fmt(l.ConfirmedQty)} · received so far: ${fmt(l.QtyReceived)}</div>
         </div>
         <div class="line-fields">
-          <input type="number" class="receiveInput" min="0" value="${fmt(l.ConfirmedQty)}" placeholder="Qty now">
+          <input type="number" class="receiveInput" min="0" value="${Number(l.ConfirmedQty)||0}" placeholder="Qty now">
           <button class="btn confirmLineBtn" type="button">Confirm</button>
         </div>
       </div>`).join('');
