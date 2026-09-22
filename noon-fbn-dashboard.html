@@ -442,6 +442,21 @@ async function apiPost(action, payload){
         : error.message);
       result = { ok:true }; break;
     }
+    // "Edit" on the Order summary panel — corrects header fields directly,
+    // independent of the status workflow. scheduledDate/deliveryLocationId
+    // are optional here (unlike "Confirm delivery", which requires both) so
+    // this can also be used to clear a mistaken entry.
+    case 'updateSalesOrder': {
+      const { error } = await client.from('sales_orders').update({
+        ship_date: payload.shipDate,
+        delivery_location_id: payload.deliveryLocationId ? Number(payload.deliveryLocationId) : null,
+        scheduled_date: payload.scheduledDate || null
+      }).eq('so_number', payload.soNumber);
+      if(error) throw new Error(error.code === '42703'
+        ? 'The database doesn\'t have a delivery_location_id column yet — ask an admin to run migration 16_delivery_locations.sql.'
+        : error.message);
+      result = { ok:true }; break;
+    }
     case 'addDeliveryLocation': {
       const { error } = await client.from('delivery_locations').insert({
         location_name: payload.locationName, location_address: payload.locationAddress || null,
@@ -1784,6 +1799,53 @@ async function openScheduleDeliveryModal(defaultDate, defaultLocationId, onSubmi
   };
 }
 
+// "Edit" on the Order summary panel — lets the office correct the header
+// fields directly (creation date, delivery location, scheduled delivery
+// date) without going through the status-workflow buttons. Doesn't touch
+// status itself; use the workflow buttons / Cancel order for that.
+async function openEditSOModal(header){
+  let locations;
+  try{ locations = activeDeliveryLocations(await ensureDeliveryLocations()); }
+  catch(e){ alert('Could not load delivery locations: ' + e.message); return; }
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'editSOOverlay';
+  const optionsHtml = `<option value="">—</option>` + locations.map(l =>
+    `<option value="${l.Id}" ${String(l.Id)===String(header&&header.DeliveryLocationId)?'selected':''}>${l.LocationName}</option>`).join('');
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="panel-head"><h3>Edit Sales Order</h3></div>
+      <form class="form" id="editSOForm">
+        <div class="field"><label>Creation date</label><input type="date" name="shipDate" required value="${header?header.ShipDate:''}"></div>
+        <div class="field"><label>Delivery location</label><select name="deliveryLocationId">${optionsHtml}</select></div>
+        <div class="field"><label>Scheduled delivery date</label><input type="date" name="scheduledDate" value="${header&&header.ScheduledDate?header.ScheduledDate:''}"></div>
+        <div class="form-foot">
+          <button class="btn primary" type="submit">Save</button>
+          <button class="btn" type="button" id="editSOCancelBtn">Cancel</button>
+          <span class="msg" id="editSOMsg"></span>
+        </div>
+      </form>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('editSOOverlay'); };
+  document.getElementById('editSOCancelBtn').onclick = () => closeModalOverlay('editSOOverlay');
+  const editForm = document.getElementById('editSOForm');
+  editForm.addEventListener('keydown', (e) => {
+    if(e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') e.preventDefault();
+  });
+  editForm.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const f = Object.fromEntries(new FormData(ev.target));
+    const msg = document.getElementById('editSOMsg');
+    msg.className='msg'; msg.textContent='Saving…';
+    try{
+      await apiPost('updateSalesOrder', Object.assign(f, { soNumber: header.SONumber }));
+      msg.className='msg ok'; msg.textContent='Saved.';
+      setTimeout(() => { closeModalOverlay('editSOOverlay'); renderSalesOrderDetail(); }, 400);
+    }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
+  };
+}
+
 async function renderSalesOrderDetail(){
   state.view = 'salesorders'; persistView();
   const soNumber = state.selectedSO;
@@ -1842,6 +1904,7 @@ async function renderSalesOrderDetail(){
     setPanel(`
       <div class="panel-head"><h3>Order summary</h3>
         <div style="display:flex;gap:8px;">
+          <button class="btn" id="editSOBtn">Edit</button>
           ${statusActions.map(a => `<button class="btn${a.primary?' primary':''}" id="${a.id}">${a.label}</button>`).join('')}
           ${canCancel ? `<button class="btn" id="cancelSOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>` : ''}
         </div></div>
@@ -1859,6 +1922,7 @@ async function renderSalesOrderDetail(){
       try{ await apiPost('cancelSalesOrder', { soNumber }); renderSalesOrderDetail(); }
       catch(e){ alert('Could not cancel: ' + e.message); }
     };
+    document.getElementById('editSOBtn').onclick = () => openEditSOModal(header);
 
     statusActions.forEach(a => {
       const btn = document.getElementById(a.id);
