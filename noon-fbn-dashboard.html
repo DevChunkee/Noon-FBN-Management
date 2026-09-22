@@ -2190,6 +2190,25 @@ async function renderPurchaseOrderDetail(){
               }
             }
           }
+          if(a.id === 'receivedBtn' || a.id === 'receivedValidateBtn'){
+            // Same display-fallback issue as Confirmed qty: the Qty received
+            // column shows Confirmed qty as its default for any line that's
+            // still at qty_received = 0 (l._receivedVal), but that default
+            // is display-only — it's never written unless the field was
+            // manually edited and Save changes clicked. Pressing Received /
+            // Received and Validate is the moment this needs to actually
+            // land in qty_received, so write the delta between what's shown
+            // and what's actually stored for every such line now, via the
+            // same additive RPC the Save changes button and the warehouse
+            // app use (so the "PO Received" ledger entry / stock bump still
+            // fires correctly off the real qty_received change).
+            for(const l of enrichedLines){
+              const delta = Number(l._receivedVal||0) - Number(l.QtyReceived||0);
+              if(delta !== 0){
+                await apiPost('updateWarehouseReceipt', { poNumber, lineNum: l.LineNum, receivedQty: delta });
+              }
+            }
+          }
           await apiPost('setPOStatus', { poNumber, status: a.to }); renderPurchaseOrderDetail();
         }
         catch(e){
