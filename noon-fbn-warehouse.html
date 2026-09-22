@@ -115,6 +115,7 @@
     <div class="tab" data-view="overview">Overview</div>
     <div class="tab" data-view="delivery">Delivery</div>
     <div class="tab" data-view="picking">Picking</div>
+    <div class="tab" data-view="intransit">In-transit</div>
     <div class="tab" data-view="receipt">Receipt</div>
     <div class="tab" data-view="settings">Settings</div>
   </div>
@@ -203,12 +204,14 @@ const FIELD_MAPS = {
     price:'Price', referral_fee:'ReferralFee', outbound_fee:'OutboundFee', storage_cost:'StorageCost',
     landed_cost:'LandedCost', net_margin:'NetMargin', margin_pct:'MarginPct', status:'Status',
     margin_flag:'MarginFlag', brand:'Brand', supplier:'Supplier' },
-  salesOrder: { so_number:'SONumber', ship_date:'ShipDate', expected_sellable_date:'ExpectedSellableDate',
-    total_units_sent:'TotalUnitsSent', total_units_received:'TotalUnitsReceived', total_damaged:'TotalDamaged',
-    total_effective_qty:'TotalEffectiveQty', status:'Status', match_status:'MatchStatus', cancelled:'Cancelled' },
+  salesOrder: { so_number:'SONumber', ship_date:'ShipDate', scheduled_date:'ScheduledDate',
+    dispatched_date:'DispatchedDate', delivered_date:'DeliveredDate', completed_date:'CompletedDate',
+    shipment_day:'ShipmentDay', expected_sellable_date:'ExpectedSellableDate',
+    total_units_sent:'TotalUnitsSent', total_confirmed_qty:'TotalConfirmedQty', total_effective_qty:'TotalEffectiveQty',
+    total_delivered_qty:'TotalDeliveredQty', status:'Status', raw_status:'RawStatus' },
   salesOrderLine: { so_number:'SONumber', line_num:'LineNum', zsku:'zSKU', qty_sent:'QtySent',
-    qty_received:'QtyReceived', qty_damaged:'QtyDamaged', discrepancy:'Discrepancy', line_status:'LineStatus',
-    confirmed_qty:'ConfirmedQty', shortage_reason:'ShortageReason', effective_qty:'EffectiveQty', so_cancelled:'SOCancelled' },
+    confirmed_qty:'ConfirmedQty', delivered_qty:'DeliveredQty', shortage_reason:'ShortageReason',
+    effective_qty:'EffectiveQty', so_status:'SOStatus' },
   purchaseOrder: { po_number:'PONumber', po_date:'PODate', supplier:'Supplier', expected_delivery:'ExpectedDelivery',
     status:'Status', quotation_number:'QuotationNumber', invoice_number:'InvoiceNumber', received_date:'ReceivedDate',
     total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
@@ -260,6 +263,17 @@ async function apiPost(action, payload){
     case 'updatePickingConfirmation': {
       const { error } = await client.from('sales_order_lines').update({ confirmed_qty: Number(payload.confirmedQty), shortage_reason: payload.shortageReason || null }).eq('so_number', payload.soNumber).eq('line_num', Number(payload.lineNum));
       if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    // Mirrors the dashboard's setSOStatus case — the warehouse's "Dispatched"
+    // button drives the same status column (Delivery -> In transit).
+    case 'setSOStatus': {
+      const patch = { status: payload.status };
+      if(payload.status === 'In transit') patch.dispatched_date = today();
+      const { error } = await client.from('sales_orders').update(patch).eq('so_number', payload.soNumber);
+      if(error) throw new Error(error.code === '23514'
+        ? 'The database doesn\'t allow the new SO status workflow yet — ask an admin to run migration 15_so_status_workflow.sql.'
+        : error.message);
+      result = { ok:true }; break;
     }
     case 'updateWarehouseReceipt': {
       const { data, error } = await client.rpc('rpc_update_warehouse_receipt', { p_po_number: payload.poNumber, p_line_num: Number(payload.lineNum), p_received_qty: Number(payload.receivedQty) });
@@ -385,6 +399,7 @@ async function render(){
   if(v === 'overview') return renderOverview();
   if(v === 'delivery') return renderDelivery();
   if(v === 'picking') return state.selectedSO ? renderPicking() : renderPickingPicker();
+  if(v === 'intransit') return renderInTransit();
   if(v === 'receipt') return state.selectedPO ? renderReceipt() : renderReceiptPicker();
   if(v === 'settings') return renderSettings();
 }
@@ -430,20 +445,23 @@ async function renderOverview(){
   state.view = 'overview'; state.selectedSO = null; state.selectedPO = null; persistView();
   $main.innerHTML = viewHead('Overview', 'What needs attention right now.') + panelShell();
   try{
-    const [soOrders, soLines, poOrders] = await Promise.all([
-      apiGet('salesOrder'), apiGet('salesOrderLine'), apiGet('purchaseOrder')
-    ]);
-    const pendingPicks = soOrders.filter(o => o.Cancelled !== 'Yes').map(o => {
-      const myLines = soLines.filter(l => l.SONumber === o.SONumber);
-      const unconfirmed = myLines.filter(l => l.ConfirmedQty === '' || l.ConfirmedQty === undefined).length;
-      return unconfirmed;
-    }).filter(n => n > 0).length;
+    const [soOrders, poOrders] = await Promise.all([apiGet('salesOrder'), apiGet('purchaseOrder')]);
+    // A Sales Order only shows up for picking once its status reads
+    // "Delivery" — Scheduled orders auto-flip to that the moment their
+    // shipment day arrives (scheduled date minus settings.shipping_transit_days),
+    // no button click needed. Same eligibility rule as the Delivery tab.
+    const pendingPicks = soOrders.filter(o => o.Status === 'Delivery').length;
+    const inTransitCount = soOrders.filter(o => o.Status === 'In transit').length;
     const pendingReceipts = poOrders.filter(o => o.Status === 'Purchase Order').length;
 
     const html = `
       <div class="order-card" id="overviewPicking">
         <div><div class="id">Picking</div><div class="meta">${pendingPicks} Sales Order(s) need picking</div></div>
         <span class="chip ${pendingPicks ? 'amber' : 'green'}">${pendingPicks ? 'Needs attention' : 'All clear'}</span>
+      </div>
+      <div class="order-card" id="overviewInTransit">
+        <div><div class="id">In-transit</div><div class="meta">${inTransitCount} Sales Order(s) dispatched, awaiting POD</div></div>
+        <span class="chip ${inTransitCount ? 'amber' : 'green'}">${inTransitCount ? 'In transit' : 'None'}</span>
       </div>
       <div class="order-card" id="overviewReceipt">
         <div><div class="id">Receipt</div><div class="meta">${pendingReceipts} Purchase Order(s) ready to receive</div></div>
@@ -452,6 +470,7 @@ async function renderOverview(){
     `;
     setPanel(html);
     document.getElementById('overviewPicking').onclick = () => switchView('picking');
+    document.getElementById('overviewInTransit').onclick = () => switchView('intransit');
     document.getElementById('overviewReceipt').onclick = () => switchView('receipt');
   }catch(e){ setPanel(errorState(e)); }
 }
@@ -459,21 +478,20 @@ async function renderOverview(){
 // ---------------- Delivery ----------------
 async function renderDelivery(){
   state.view = 'delivery'; persistView();
-  $main.innerHTML = viewHead('Delivery', 'Sales Orders scheduled to ship to Noon FBN. Tap one to start picking.') + panelShell();
+  $main.innerHTML = viewHead('Delivery', 'Sales Orders ready to pick — their shipment day has arrived. Tap one to start picking.') + panelShell();
   try{
     const orders = await apiGet('salesOrder');
     const lines = await apiGet('salesOrderLine');
-    const pending = orders.filter(o => o.Cancelled !== 'Yes').map(o => {
+    const pending = orders.filter(o => o.Status === 'Delivery').map(o => {
       const myLines = lines.filter(l => l.SONumber === o.SONumber);
-      const unconfirmed = myLines.filter(l => l.ConfirmedQty === '' || l.ConfirmedQty === undefined).length;
-      return Object.assign({}, o, { lineCount: myLines.length, unconfirmed });
-    }).filter(o => o.unconfirmed > 0);
+      return Object.assign({}, o, { lineCount: myLines.length });
+    });
     const cardsHtml = pending.length ? pending.map(o => `
       <div class="order-card" data-so="${o.SONumber}">
-        <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipDate||''} · ${o.lineCount} line(s), ${o.unconfirmed} not yet picked</div></div>
+        <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipDate||''} · ${o.lineCount} line(s)</div></div>
         <span class="chip amber">Needs picking</span>
       </div>`).join('') : '';
-    setPanel(cardsHtml || emptyState('Nothing scheduled — every active Sales Order has been picked.'));
+    setPanel(cardsHtml || emptyState('Nothing ready to pick right now — Scheduled orders show up here once their shipment day arrives.'));
     document.querySelectorAll('.order-card[data-so]').forEach(card => {
       card.onclick = () => { state.selectedSO = card.dataset.so; state.view = 'picking';
         document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === 'picking'));
@@ -483,20 +501,40 @@ async function renderDelivery(){
 }
 
 // ---------------- Picking ----------------
+// Gated the same way as Delivery — only orders whose shipment day has
+// arrived (status reads "Delivery") are pickable here.
 async function renderPickingPicker(){
   state.view = 'picking'; state.selectedSO = null; persistView();
   $main.innerHTML = viewHead('Picking', 'Choose a Sales Order to pick.') + panelShell();
   try{
     const orders = await apiGet('salesOrder');
-    const active = orders.filter(o => o.Cancelled !== 'Yes');
+    const active = orders.filter(o => o.Status === 'Delivery');
     const cardsHtml = active.length ? active.slice().reverse().map(o => `
       <div class="order-card" data-so="${o.SONumber}">
         <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipDate||''} · ${o.Status||''}</div></div>
       </div>`).join('') : '';
-    setPanel(cardsHtml || emptyState('No active Sales Orders.'));
+    setPanel(cardsHtml || emptyState('Nothing ready to pick right now.'));
     document.querySelectorAll('.order-card[data-so]').forEach(card => {
       card.onclick = () => { state.selectedSO = card.dataset.so; renderPicking(); };
     });
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+// ---------------- In-transit ----------------
+// Read-only tracking list — Confirm POD / Delivered / Completed all happen
+// in the dashboard, not here.
+async function renderInTransit(){
+  state.view = 'intransit'; state.selectedSO = null; state.selectedPO = null; persistView();
+  $main.innerHTML = viewHead('In-transit', 'Dispatched Sales Orders awaiting Proof of Delivery (confirmed in the dashboard).') + panelShell();
+  try{
+    const orders = await apiGet('salesOrder');
+    const active = orders.filter(o => o.Status === 'In transit');
+    const cardsHtml = active.length ? active.slice().reverse().map(o => `
+      <div class="order-card">
+        <div><div class="id">${o.SONumber}</div><div class="meta">Dispatched ${o.DispatchedDate||''} · ${fmt(o.TotalEffectiveQty)} unit(s)</div></div>
+        <span class="chip amber">In transit</span>
+      </div>`).join('') : '';
+    setPanel(cardsHtml || emptyState('Nothing in transit right now.'));
   }catch(e){ setPanel(errorState(e)); }
 }
 
@@ -504,12 +542,22 @@ async function renderPicking(){
   state.view = 'picking'; persistView();
   const soNumber = state.selectedSO;
   $main.innerHTML = `<a href="#" class="back" id="backPicking">← Choose a different order</a>` +
-    viewHead(`Picking — ${soNumber}`, 'Confirm what was actually picked for each item. A shortfall needs a reason before saving.') + panelShell();
+    viewHead(`Picking — ${soNumber}`, 'Confirm what was actually picked for each item, then Dispatch. A shortfall needs a reason first.') + panelShell();
   document.getElementById('backPicking').onclick = (e) => { e.preventDefault(); state.selectedSO = null; renderPickingPicker(); };
   try{
     const catalog = await ensureCatalog();
-    const lines = (await apiGet('salesOrderLine', true)).filter(l => l.SONumber === soNumber);
+    const [orders, allLines] = await Promise.all([apiGet('salesOrder', true), apiGet('salesOrderLine', true)]);
+    const header = orders.find(o => o.SONumber === soNumber);
+    const lines = allLines.filter(l => l.SONumber === soNumber);
     if(!lines.length){ setPanel(emptyState('This order has no lines yet.')); return; }
+    // Only pickable while status reads "Delivery" — if it's moved on since
+    // this screen was opened (e.g. a refresh restored a now-stale link),
+    // show a message instead of a form whose Dispatched button would just
+    // fail server-side.
+    if(header && header.Status !== 'Delivery'){
+      setPanel(emptyState(`This order is now "${header.Status}" — it's no longer open for picking.`));
+      return;
+    }
 
     const reasons = ['Stock shortfall - need to investigate','Reserved for another order','Damaged in warehouse','Miscount / data entry error','Other'];
     const rowsHtml = lines.map(l => `
@@ -533,7 +581,7 @@ async function renderPicking(){
       </div>
       ${rowsHtml}
       <div style="padding:16px;">
-        <button class="btn primary full" id="savePickingBtn">Save picking confirmation</button>
+        <button class="btn primary full" id="dispatchBtn">Dispatched</button>
         <div class="msg" id="pickingMsg" style="padding-top:10px;"></div>
       </div>
     `);
@@ -562,9 +610,10 @@ async function renderPicking(){
     scanInput.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); handleScan(scanInput.value.trim()); } };
     document.getElementById('scanCamBtn').onclick = () => openScanModal(handleScan);
 
-    document.getElementById('savePickingBtn').onclick = async () => {
-      const btn = document.getElementById('savePickingBtn');
+    document.getElementById('dispatchBtn').onclick = async () => {
+      const btn = document.getElementById('dispatchBtn');
       const msg = document.getElementById('pickingMsg');
+      if(!confirm(`Dispatch ${soNumber}? This saves the picked quantities and moves it to In transit.`)) return;
       btn.disabled = true; msg.className = 'msg'; msg.textContent = 'Saving…';
       try{
         const rows = document.querySelectorAll('.line-row');
@@ -575,7 +624,8 @@ async function renderPicking(){
           const shortageReason = reasonSel.style.display !== 'none' ? reasonSel.value : '';
           await apiPost('updatePickingConfirmation', { soNumber, lineNum, confirmedQty, shortageReason });
         }
-        msg.className = 'msg ok'; msg.textContent = 'Saved.';
+        await apiPost('setSOStatus', { soNumber, status: 'In transit' });
+        msg.className = 'msg ok'; msg.textContent = 'Dispatched.';
         setTimeout(() => { state.selectedSO = null; renderDelivery(); switchView('delivery'); }, 700);
       }catch(e){ msg.className = 'msg err'; msg.textContent = e.message; btn.disabled = false; }
     };

@@ -260,12 +260,14 @@ const FIELD_MAPS = {
     revenue:'Revenue', referral_fee_paid:'ReferralFeePaid', net_revenue:'NetRevenue' },
   salesFunnelLog: { period:'Period', zsku:'zSKU', sku:'SKU', item_name:'ItemName', impressions:'Impressions',
     gvs:'GVs', atcs:'ATCs', units:'Units', gmv:'GMV', ctr:'CTR', cr:'CR', atc_cr:'ATCCR', cart_cr:'CartCR' },
-  salesOrder: { so_number:'SONumber', ship_date:'ShipDate', expected_sellable_date:'ExpectedSellableDate',
-    total_units_sent:'TotalUnitsSent', total_units_received:'TotalUnitsReceived', total_damaged:'TotalDamaged',
-    total_effective_qty:'TotalEffectiveQty', status:'Status', match_status:'MatchStatus', cancelled:'Cancelled' },
+  salesOrder: { so_number:'SONumber', ship_date:'ShipDate', scheduled_date:'ScheduledDate',
+    dispatched_date:'DispatchedDate', delivered_date:'DeliveredDate', completed_date:'CompletedDate',
+    shipment_day:'ShipmentDay', expected_sellable_date:'ExpectedSellableDate',
+    total_units_sent:'TotalUnitsSent', total_confirmed_qty:'TotalConfirmedQty', total_effective_qty:'TotalEffectiveQty',
+    total_delivered_qty:'TotalDeliveredQty', status:'Status', raw_status:'RawStatus' },
   salesOrderLine: { so_number:'SONumber', line_num:'LineNum', zsku:'zSKU', qty_sent:'QtySent',
-    qty_received:'QtyReceived', qty_damaged:'QtyDamaged', discrepancy:'Discrepancy', line_status:'LineStatus',
-    confirmed_qty:'ConfirmedQty', shortage_reason:'ShortageReason', effective_qty:'EffectiveQty', so_cancelled:'SOCancelled' },
+    confirmed_qty:'ConfirmedQty', delivered_qty:'DeliveredQty', shortage_reason:'ShortageReason',
+    effective_qty:'EffectiveQty', so_status:'SOStatus' },
   purchaseOrder: { po_number:'PONumber', po_date:'PODate', supplier:'Supplier', expected_delivery:'ExpectedDelivery',
     status:'Status', quotation_number:'QuotationNumber', invoice_number:'InvoiceNumber', received_date:'ReceivedDate', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
     total_received_qty:'TotalReceivedQty' },
@@ -403,8 +405,41 @@ async function apiPost(action, payload){
       result = { ok:true }; break;
     }
     case 'cancelSalesOrder': {
-      const { error } = await client.from('sales_orders').update({ cancelled: true }).eq('so_number', payload.soNumber);
+      const { error } = await client.from('sales_orders').update({ status: 'Cancelled' }).eq('so_number', payload.soNumber);
+      if(error) throw new Error(error.code === '23514'
+        ? 'The database doesn\'t allow the new SO status workflow yet — ask an admin to run migration 15_so_status_workflow.sql.'
+        : error.message);
+      result = { ok:true }; break;
+    }
+    case 'setSOStatus': {
+      const patch = { status: payload.status };
+      if(payload.status === 'In transit') patch.dispatched_date = today();
+      if(payload.status === 'Delivered') patch.delivered_date = today();
+      if(payload.status === 'Completed') patch.completed_date = today();
+      const { error } = await client.from('sales_orders').update(patch).eq('so_number', payload.soNumber);
+      if(error) throw new Error(error.code === '23514'
+        ? 'The database doesn\'t allow the new SO status workflow yet — ask an admin to run migration 15_so_status_workflow.sql.'
+        : error.message);
+      result = { ok:true }; break;
+    }
+    // "Confirm delivery" — office picks a scheduled delivery date and the SO
+    // moves to Scheduled. Shipment day (when it becomes visible for picking
+    // in the warehouse app) is computed automatically from this date minus
+    // settings.shipping_transit_days.
+    case 'scheduleSODelivery': {
+      const { error } = await client.from('sales_orders')
+        .update({ status: 'Scheduled', scheduled_date: payload.scheduledDate }).eq('so_number', payload.soNumber);
       if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
+    // Per-line Delivered qty, written by "Confirm POD" (Proof Of Delivery).
+    case 'updateSODeliveredQty': {
+      const { error } = await client.from('sales_order_lines')
+        .update({ delivered_qty: Number(payload.deliveredQty) })
+        .eq('so_number', payload.soNumber).eq('line_num', Number(payload.lineNum));
+      if(error) throw new Error(error.code === '42703'
+        ? 'The database doesn\'t have a delivered_qty column yet — ask an admin to run migration 15_so_status_workflow.sql.'
+        : error.message);
+      result = { ok:true }; break;
     }
     case 'cancelPurchaseOrder': {
       const { error } = await client.from('purchase_orders').update({ status: 'Cancelled' }).eq('po_number', payload.poNumber);
@@ -1437,31 +1472,24 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
 }
 
 async function renderShipments(){
-  $main.innerHTML = viewHead('Shipments', 'Every Sales Order sent to Noon FBN, with receiving status and whether it reconciles against the GRN report.') + panelShell('loading');
+  $main.innerHTML = viewHead('Shipments', 'Every Sales Order sent to Noon FBN, with its status through the Open → Completed workflow.') + panelShell('loading');
   try{
     const rows = await apiGet('salesOrder');
-    const chip = (status) => {
-      if(status === '\u2713 Confirmed Match') return `<span class="chip green">${status}</span>`;
-      if(status === '\u26a0 Discrepancy') return `<span class="chip red">${status}</span>`;
-      if(status) return `<span class="chip amber">${status}</span>`;
-      return '—';
-    };
     const body = rows.length ? rows.slice().reverse().map(r => `
       <tr>
         <td class="sku">${r.SONumber}</td>
         <td>${r.ShipDate||''}</td>
         <td>${r.ExpectedSellableDate||''}</td>
         <td class="num">${fmt(r.TotalUnitsSent)}</td>
-        <td class="num">${fmt(r.TotalUnitsReceived)}</td>
-        <td class="num">${fmt(r.TotalDamaged)}</td>
-        <td>${r.Status||''}</td>
-        <td>${chip(r.MatchStatus)}</td>
+        <td class="num">${fmt(r.TotalConfirmedQty)}</td>
+        <td class="num">${fmt(r.TotalDeliveredQty)}</td>
+        <td>${soStatusChip(r.Status)}</td>
       </tr>`).join('') : '';
     setPanel(`
       <div class="panel-head"><h3>${rows.length} shipment${rows.length===1?'':'s'}</h3>
         <button class="btn" onclick="refreshAll()">Refresh</button></div>
       ${rows.length ? `<table>
-        <thead><tr><th>SO</th><th>Ship date</th><th>Expected sellable</th><th class="num">Sent</th><th class="num">Received</th><th class="num">Damaged/short</th><th>Status</th><th>Match</th></tr></thead>
+        <thead><tr><th>SO</th><th>Ship date</th><th>Expected sellable</th><th class="num">Sent</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Status</th></tr></thead>
         <tbody>${body}</tbody></table>` : emptyState('No shipments logged yet — use "Log shipment (SO)".')}
     `);
   }catch(e){ setPanel(errorState(e)); }
@@ -1584,25 +1612,29 @@ async function renderWeekly(){
   }catch(e){ setPanel(errorState(e)); }
 }
 
+// Status shown here is the "effective" status from v_sales_orders — a
+// Scheduled order automatically displays (and chips) as "Delivery" once its
+// shipment day has arrived, with no button click needed.
+function soStatusChip(status){
+  const map = { Open:'gray', Pending:'amber', Confirmed:'blue', Scheduled:'blue', Delivery:'amber',
+    'In transit':'amber', Delivered:'green', Completed:'green', Cancelled:'red' };
+  const cls = map[status] || 'gray';
+  return `<span class="chip ${cls}">${status||''}</span>`;
+}
 async function renderSalesOrders(){
   state.view = 'salesorders'; state.selectedSO = null; persistView();
   $main.innerHTML = viewHead('Sales Orders', 'Shipments sent to Noon FBN. Click one to view or add its items.') + panelShell('loading');
   try{
     const rows = await apiGet('salesOrder');
-    const chip = (status) => {
-      if(status === '\u2713 Confirmed Match') return `<span class="chip green">${status}</span>`;
-      if(status === '\u26a0 Discrepancy') return `<span class="chip red">${status}</span>`;
-      if(status) return `<span class="chip amber">${status}</span>`;
-      return '—';
-    };
     const body = rows.length ? rows.slice().reverse().map(r => `
       <tr class="clickRow" data-so="${r.SONumber}">
         <td class="sku">${r.SONumber}</td>
         <td>${r.ShipDate||''}</td>
+        <td>${r.ScheduledDate||'—'}</td>
         <td class="num">${fmt(r.TotalUnitsSent)}</td>
-        <td class="num">${fmt(r.TotalUnitsReceived)}</td>
-        <td>${r.Status||''}</td>
-        <td>${chip(r.MatchStatus)}</td>
+        <td class="num">${fmt(r.TotalConfirmedQty)}</td>
+        <td class="num">${fmt(r.TotalDeliveredQty)}</td>
+        <td>${soStatusChip(r.Status)}</td>
       </tr>`).join('') : '';
     setPanel(`
       <div class="panel-head"><h3>${rows.length} order${rows.length===1?'':'s'}</h3>
@@ -1611,7 +1643,7 @@ async function renderSalesOrders(){
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div></div>
       ${rows.length ? `<table>
-        <thead><tr><th>SO</th><th>Ship date</th><th class="num">Sent</th><th class="num">Received</th><th>Status</th><th>Match</th></tr></thead>
+        <thead><tr><th>SO</th><th>Ship date</th><th>Scheduled</th><th class="num">Planned</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Status</th></tr></thead>
         <tbody>${body}</tbody></table>` : emptyState('No sales orders yet — click "Create new Sales Order" above.')}
     `);
     document.querySelectorAll('tr.clickRow[data-so]').forEach(tr => {
@@ -1662,6 +1694,35 @@ async function openCreateSOModal(){
 }
 
 
+// Small popup asking for a scheduled delivery date — moves the SO to
+// Scheduled. Shipment day (when it becomes visible for picking in the
+// warehouse app) is computed automatically from this date minus
+// settings.shipping_transit_days, so nothing else needs entering here.
+function openScheduleDeliveryModal(defaultDate, onSubmit){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal">
+    <h3>Confirm delivery</h3>
+    <p style="color:var(--text-dim);font-size:13px;margin:-6px 0 14px;">Pick the scheduled delivery date. This order becomes visible for picking in the warehouse app automatically once its shipment day arrives.</p>
+    <div class="field"><label>Scheduled delivery date</label><input type="date" id="scheduleDateInput" value="${defaultDate||''}" style="width:100%;" autofocus></div>
+    <span class="msg err" id="scheduleDateErr" style="display:none;padding:6px 0 0;">Pick a date.</span>
+    <div class="form-foot" style="margin-top:10px;">
+      <button class="btn primary" id="scheduleDateConfirm" style="flex:1;">Confirm delivery</button>
+      <button class="btn" id="scheduleDateCancel">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const input = document.getElementById('scheduleDateInput');
+  const err = document.getElementById('scheduleDateErr');
+  overlay.onclick = (e) => { if(e.target === overlay) overlay.remove(); };
+  document.getElementById('scheduleDateCancel').onclick = () => overlay.remove();
+  document.getElementById('scheduleDateConfirm').onclick = () => {
+    if(!input.value){ err.style.display = ''; input.focus(); return; }
+    overlay.remove();
+    onSubmit(input.value);
+  };
+}
+
 async function renderSalesOrderDetail(){
   state.view = 'salesorders'; persistView();
   const soNumber = state.selectedSO;
@@ -1673,31 +1734,63 @@ async function renderSalesOrderDetail(){
     const [orders, lines] = await Promise.all([apiGet('salesOrder'), apiGet('salesOrderLine')]);
     const header = orders.find(o => o.SONumber === soNumber);
     const myLines = lines.filter(l => l.SONumber === soNumber);
-    const isCancelled = header && header.Cancelled === 'Yes';
-    const lineChip = (s) => s === 'Matched' ? `<span class="chip green">Matched</span>` :
-      s === 'Mismatch' ? `<span class="chip red">Mismatch</span>` : s ? `<span class="chip amber">${s}</span>` : '—';
-    const rowsHtml = myLines.map(l => {
+    const status = header ? header.Status : '';       // effective/display status
+    const rawStatus = header ? header.RawStatus : '';  // stored status (Scheduled stays Scheduled even once it displays as Delivery)
+    const isOpen = status === 'Open';
+    const isPending = status === 'Pending';
+    const isConfirmed = status === 'Confirmed';
+    const isScheduledRaw = rawStatus === 'Scheduled'; // covers both "waiting for shipment day" and "showing as Delivery"
+    const isDelivery = status === 'Delivery';
+    const isInTransit = status === 'In transit';
+    const isDelivered = status === 'Delivered';
+    const isCompleted = status === 'Completed';
+    const isCancelled = status === 'Cancelled';
+    const deliveredEditableStage = isInTransit;
+
+    const enrichedLines = myLines.map(l => {
+      const confirmedVal = (l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined) ? Number(l.ConfirmedQty) : Number(l.QtySent||0);
+      const hasDelivered = l.DeliveredQty !== null && l.DeliveredQty !== '' && l.DeliveredQty !== undefined;
+      const deliveredVal = hasDelivered ? Number(l.DeliveredQty) : Number(l.EffectiveQty||confirmedVal||0);
+      return Object.assign({}, l, { _confirmedVal: confirmedVal, _deliveredVal: deliveredVal, _hasDelivered: hasDelivered });
+    });
+    const rowsHtml = enrichedLines.map(l => {
       const c = catalog.find(x => x.zSKU === l.zSKU) || {};
-      const confirmedVal = (l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined) ? l.ConfirmedQty : l.QtySent;
+      const deliveredCell = deliveredEditableStage
+        ? `<input type="number" class="deliveredQtyInput" min="0" value="${l._deliveredVal}" data-original="${l._deliveredVal}" style="width:80px;text-align:center;">`
+        : fmt(l._hasDelivered ? l.DeliveredQty : (isDelivered || isCompleted ? l._deliveredVal : null));
       return `
-      <tr><td class="sku">${c.SKU||''}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td>
+      <tr data-linenum="${l.LineNum}"><td class="sku">${c.SKU||''}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td>
         <td class="num">${fmt(l.QtySent)}</td>
-        <td class="num">${fmt(confirmedVal)}</td>
-        <td class="num" style="font-weight:600;">${fmt(l.EffectiveQty)}</td>
-        <td class="num">${fmt(l.QtyReceived)}</td>
-        <td class="num">${fmt(l.QtyDamaged)}</td><td class="num">${fmt(l.Discrepancy)}</td>
-        <td>${lineChip(l.LineStatus)}</td>
+        <td class="num">${fmt(l._confirmedVal)}</td>
+        <td class="num">${deliveredCell}</td>
         <td style="font-size:11.5px;color:var(--text-dim);">${l.ShortageReason||''}</td></tr>`;
     }).join('');
 
+    const statusActions = [];
+    if(isOpen) statusActions.push({ id:'confirmOpenBtn', label:'Confirm', primary:true, to:'Pending', confirmMsg:'Confirm this Sales Order and move it to Pending?' });
+    if(isPending){
+      statusActions.push({ id:'confirmPendingBtn', label:'Confirm', primary:true, to:'Confirmed', confirmMsg:'Confirm this Sales Order?' });
+      statusActions.push({ id:'backToOpenSOBtn', label:'Back to Open', primary:false, to:'Open', confirmMsg:'Move this Sales Order back to Open?' });
+    }
+    if(isConfirmed) statusActions.push({ id:'confirmDeliveryBtn', label:'Confirm delivery', primary:true, schedule:true });
+    if(isScheduledRaw) statusActions.push({ id:'backToConfirmedSOBtn', label:'Back to Confirmed', primary:false, to:'Confirmed', confirmMsg:'Move this Sales Order back to Confirmed? Its scheduled date stays on file if you confirm delivery again.' });
+    if(isInTransit) statusActions.push({ id:'confirmPODBtn', label:'Confirm POD', primary:true, to:'Delivered', pod:true, confirmMsg:'Confirm proof of delivery and mark this Sales Order Delivered?' });
+    if(isDelivered) statusActions.push({ id:'completeSOBtn', label:'Complete', primary:true, to:'Completed', confirmMsg:'Mark this Sales Order as Completed? This is its final stage.' });
+    const canCancel = !isCancelled && !isCompleted;
+
     setPanel(`
       <div class="panel-head"><h3>Order summary</h3>
-        ${isCancelled ? `<span class="chip red">Cancelled</span>` :
-          `<button class="btn" id="cancelSOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>`}</div>
-      <div class="batch-bar"><label>Ship date</label><span>${header?header.ShipDate:''}</span>
-        <label>Status</label><span>${header?header.Status:''}</span>
+        <div style="display:flex;gap:8px;">
+          ${statusActions.map(a => `<button class="btn${a.primary?' primary':''}" id="${a.id}">${a.label}</button>`).join('')}
+          ${canCancel ? `<button class="btn" id="cancelSOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>` : ''}
+        </div></div>
+      <div class="batch-bar" style="flex-wrap:wrap;"><label>Ship date</label><span>${header?header.ShipDate:''}</span>
+        <label>Scheduled delivery</label><span>${header&&header.ScheduledDate?header.ScheduledDate:'—'}</span>
+        <label>Shipment day</label><span>${header&&header.ShipmentDay?header.ShipmentDay:'—'}</span>
+        <label>Status</label><span>${soStatusChip(status)}</span>
         <label>Expected sellable</label><span>${header?header.ExpectedSellableDate:''}</span></div>
     `);
+
     const cancelBtn = document.getElementById('cancelSOBtn');
     if(cancelBtn) cancelBtn.onclick = async () => {
       if(!confirm(`Cancel ${soNumber}? All its stock will return to Internal WH automatically.`)) return;
@@ -1705,12 +1798,53 @@ async function renderSalesOrderDetail(){
       catch(e){ alert('Could not cancel: ' + e.message); }
     };
 
+    statusActions.forEach(a => {
+      const btn = document.getElementById(a.id);
+      if(!btn) return;
+      btn.onclick = async () => {
+        if(a.schedule){
+          openScheduleDeliveryModal(header && header.ScheduledDate, async (scheduledDate) => {
+            btn.disabled = true;
+            try{ await apiPost('scheduleSODelivery', { soNumber, scheduledDate }); renderSalesOrderDetail(); }
+            catch(e){ alert(e.message); btn.disabled = false; }
+          });
+          return;
+        }
+        const dirtyLineEdit = Array.from(document.querySelectorAll('.deliveredQtyInput'))
+          .some(inp => !inp.disabled && inp.value !== inp.dataset.original);
+        if(dirtyLineEdit && !a.pod){
+          alert('You have unsaved Delivered qty changes. Click "Confirm POD" to save and deliver, or refresh to discard them.');
+          return;
+        }
+        if(!confirm(a.confirmMsg)) return;
+        btn.disabled = true;
+        try{
+          if(a.pod){
+            // Same display-fallback pattern used for Confirmed/Received qty
+            // elsewhere: the Delivered qty column defaults to Effective qty
+            // for display, but that default is never written unless the
+            // field was manually edited — Confirm POD is the moment it needs
+            // to actually land in delivered_qty for every line.
+            for(const l of enrichedLines){
+              const row = document.querySelector(`tr[data-linenum="${l.LineNum}"]`);
+              const inp = row ? row.querySelector('.deliveredQtyInput') : null;
+              const shownVal = inp ? Number(inp.value||0) : l._deliveredVal;
+              if(!l._hasDelivered || Number(l.DeliveredQty) !== shownVal){
+                await apiPost('updateSODeliveredQty', { soNumber, lineNum: l.LineNum, deliveredQty: shownVal });
+              }
+            }
+          }
+          await apiPost('setSOStatus', { soNumber, status: a.to }); renderSalesOrderDetail();
+        }catch(e){ alert(e.message); btn.disabled = false; }
+      };
+    });
+
     const linesPanel = document.createElement('div');
     linesPanel.className = 'panel';
     linesPanel.innerHTML = `
       <div class="panel-head"><h3>${myLines.length} line item(s)</h3>
         ${myLines.length ? exportBtnHtml('soExportBtn','Export lines') : ''}</div>
-      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th><th class="num">Confirmed</th><th class="num">Effective</th><th class="num">Received</th><th class="num">Damaged</th><th class="num">Discrepancy</th><th>Status</th><th>Shortage reason</th></tr></thead>
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Shortage reason</th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>` : emptyState('No items yet — add one below or import a file.')}`;
     document.getElementById('main').appendChild(linesPanel);
     const soExportBtn = document.getElementById('soExportBtn');
