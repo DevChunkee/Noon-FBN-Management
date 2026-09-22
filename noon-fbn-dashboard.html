@@ -445,17 +445,32 @@ async function apiPost(action, payload){
     // "Edit" on the Order summary panel — corrects header fields directly,
     // independent of the status workflow. scheduledDate/deliveryLocationId
     // are optional here (unlike "Confirm delivery", which requires both) so
-    // this can also be used to clear a mistaken entry.
+    // this can also be used to clear a mistaken entry. Renaming the SO
+    // number (if changed) happens first, as its own update, so a duplicate
+    // number is rejected cleanly before anything else is touched.
     case 'updateSalesOrder': {
+      let currentSoNumber = payload.soNumber;
+      const newSoNumber = (payload.newSoNumber||'').trim();
+      if(!newSoNumber) throw new Error('SO number can\'t be blank.');
+      if(newSoNumber !== currentSoNumber){
+        const { error: renameErr } = await client.from('sales_orders')
+          .update({ so_number: newSoNumber }).eq('so_number', currentSoNumber);
+        if(renameErr) throw new Error(renameErr.code === '23505'
+          ? `SO number "${newSoNumber}" is already in use — pick a different one.`
+          : (renameErr.code === '23503'
+            ? 'The database doesn\'t allow renaming an SO with line items yet — run migration 17_so_number_editable.sql in Supabase, then try again.'
+            : renameErr.message));
+        currentSoNumber = newSoNumber;
+      }
       const { error } = await client.from('sales_orders').update({
         ship_date: payload.shipDate,
         delivery_location_id: payload.deliveryLocationId ? Number(payload.deliveryLocationId) : null,
         scheduled_date: payload.scheduledDate || null
-      }).eq('so_number', payload.soNumber);
+      }).eq('so_number', currentSoNumber);
       if(error) throw new Error(error.code === '42703'
         ? 'The database doesn\'t have a delivery_location_id column yet — ask an admin to run migration 16_delivery_locations.sql.'
         : error.message);
-      result = { ok:true }; break;
+      result = { ok:true, newSoNumber: currentSoNumber }; break;
     }
     case 'addDeliveryLocation': {
       const { error } = await client.from('delivery_locations').insert({
@@ -1816,9 +1831,10 @@ async function openEditSOModal(header){
     <div class="modal">
       <div class="panel-head"><h3>Edit Sales Order</h3></div>
       <form class="form" id="editSOForm">
+        <div class="field"><label>Sales Order number</label><input type="text" name="newSoNumber" required value="${header?String(header.SONumber).replace(/"/g,'&quot;'):''}"></div>
         <div class="field"><label>Creation date</label><input type="date" name="shipDate" required value="${header?header.ShipDate:''}"></div>
         <div class="field"><label>Delivery location</label><select name="deliveryLocationId">${optionsHtml}</select></div>
-        <div class="field"><label>Scheduled delivery date</label><input type="date" name="scheduledDate" value="${header&&header.ScheduledDate?header.ScheduledDate:''}"></div>
+        <div class="field"><label>Delivery date</label><input type="date" name="scheduledDate" value="${header&&header.ScheduledDate?header.ScheduledDate:''}"></div>
         <div class="form-foot">
           <button class="btn primary" type="submit">Save</button>
           <button class="btn" type="button" id="editSOCancelBtn">Cancel</button>
@@ -1839,7 +1855,8 @@ async function openEditSOModal(header){
     const msg = document.getElementById('editSOMsg');
     msg.className='msg'; msg.textContent='Saving…';
     try{
-      await apiPost('updateSalesOrder', Object.assign(f, { soNumber: header.SONumber }));
+      const r = await apiPost('updateSalesOrder', Object.assign(f, { soNumber: header.SONumber }));
+      if(r && r.newSoNumber) state.selectedSO = r.newSoNumber;
       msg.className='msg ok'; msg.textContent='Saved.';
       setTimeout(() => { closeModalOverlay('editSOOverlay'); renderSalesOrderDetail(); }, 400);
     }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
