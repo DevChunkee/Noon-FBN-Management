@@ -270,7 +270,7 @@ const FIELD_MAPS = {
     expected_delivery_date:'ExpectedDeliveryDate', expected_ship_day:'ExpectedShipDay' },
   salesOrderLine: { so_number:'SONumber', line_num:'LineNum', zsku:'zSKU', qty_sent:'QtySent',
     confirmed_qty:'ConfirmedQty', delivered_qty:'DeliveredQty', shortage_reason:'ShortageReason',
-    effective_qty:'EffectiveQty', so_status:'SOStatus' },
+    effective_qty:'EffectiveQty', so_status:'SOStatus', selling_price:'SellingPrice', line_total:'LineTotal' },
   purchaseOrder: { po_number:'PONumber', po_date:'PODate', supplier:'Supplier', expected_delivery:'ExpectedDelivery',
     status:'Status', quotation_number:'QuotationNumber', invoice_number:'InvoiceNumber', received_date:'ReceivedDate', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
     total_received_qty:'TotalReceivedQty' },
@@ -1957,10 +1957,18 @@ async function renderSalesOrderDetail(){
       return `
       <tr data-linenum="${l.LineNum}"><td class="sku">${c.SKU||''}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td>
         <td class="num">${fmt(l.QtySent)}</td>
+        <td class="num">${fmt(l.SellingPrice)}</td><td class="num">${fmt(l.LineTotal)}</td>
         <td class="num">${confirmedCell}</td>
         <td class="num">${deliveredCell}</td>
         <td>${shortageCell}</td></tr>`;
     }).join('');
+
+    const totalPlannedQty = enrichedLines.reduce((s,l) => s + Number(l.QtySent||0), 0);
+    const totalPlannedValue = enrichedLines.reduce((s,l) => s + Number(l.LineTotal||0), 0);
+    const totalConfirmedQty = enrichedLines.reduce((s,l) => s + Number(l._confirmedVal||0), 0);
+    const totalConfirmedValue = enrichedLines.reduce((s,l) => s + Number(l._confirmedVal||0) * Number(l.SellingPrice||0), 0);
+    const totalDeliveredQty = enrichedLines.reduce((s,l) => s + Number(l._deliveredVal||0), 0);
+    const totalDeliveredValue = enrichedLines.reduce((s,l) => s + Number(l._deliveredVal||0) * Number(l.SellingPrice||0), 0);
 
     const statusActions = [];
     if(isOpen) statusActions.push({ id:'confirmOpenBtn', label:'Confirm', primary:true, to:'Pending', confirmMsg:'Confirm this Sales Order and move it to Pending?' });
@@ -2059,8 +2067,18 @@ async function renderSalesOrderDetail(){
     linesPanel.innerHTML = `
       <div class="panel-head"><h3>${myLines.length} line item(s)</h3>
         ${myLines.length ? exportBtnHtml('soExportBtn','Export lines') : ''}</div>
-      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Shortage reason</th></tr></thead>
-        <tbody>${rowsHtml}</tbody></table>` : emptyState('No items yet — add one below or import a file.')}`;
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th><th class="num">Selling price</th><th class="num">Line total</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Shortage reason</th></tr></thead>
+        <tbody>${rowsHtml}</tbody></table>
+        <div class="batch-bar" style="flex-wrap:wrap;border-top:1px solid var(--border);font-weight:600;">
+          <label>Total planned qty</label><span>${fmt(totalPlannedQty)}</span>
+          <label>Value</label><span>${fmt(totalPlannedValue)}</span>
+          <span style="color:var(--text-faint);font-weight:400;">|</span>
+          <label>Total confirmed qty</label><span>${fmt(totalConfirmedQty)}</span>
+          <label>Value</label><span>${fmt(totalConfirmedValue)}</span>
+          <span style="color:var(--text-faint);font-weight:400;">|</span>
+          <label>Total delivered qty</label><span>${fmt(totalDeliveredQty)}</span>
+          <label>Value</label><span>${fmt(totalDeliveredValue)}</span>
+        </div>` : emptyState('No items yet — add one below or import a file.')}`;
     document.getElementById('main').appendChild(linesPanel);
     const soExportBtn = document.getElementById('soExportBtn');
     if(soExportBtn) soExportBtn.onclick = () => exportRows(myLines, `${soNumber}-lines.xlsx`, soNumber);
