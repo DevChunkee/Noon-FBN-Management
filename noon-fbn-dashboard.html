@@ -427,6 +427,16 @@ async function apiPost(action, payload){
         : error.message);
       result = { ok:true }; break;
     }
+    // Picking confirmation — identical to the warehouse app's own
+    // 'updatePickingConfirmation' case (same table, same columns). Whichever
+    // side (dashboard or warehouse) confirms picking first is what sticks;
+    // both write through this exact same call.
+    case 'updatePickingConfirmation': {
+      const { error } = await client.from('sales_order_lines')
+        .update({ confirmed_qty: Number(payload.confirmedQty), shortage_reason: payload.shortageReason || null })
+        .eq('so_number', payload.soNumber).eq('line_num', Number(payload.lineNum));
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
     case 'setSOStatus': {
       const patch = { status: payload.status };
       if(payload.status === 'In transit') patch.dispatched_date = today();
@@ -1898,30 +1908,48 @@ async function renderSalesOrderDetail(){
     const isCompleted = status === 'Completed';
     const isCancelled = status === 'Cancelled';
     const deliveredEditableStage = isInTransit;
+    // Confirmed Qty (picking) is editable right on this screen while the
+    // order is Pending — the exact same step as the warehouse's Picking
+    // screen (same DB write, "updatePickingConfirmation"; whichever side
+    // does it first is what counts). Clicking "Confirm" here saves it and
+    // advances the order to Confirmed, same as the warehouse's own
+    // "Confirm Picking" button.
+    const confirmedEditableStage = isPending;
+    const shortageReasons = ['Stock shortfall - need to investigate','Reserved for another order','Damaged in warehouse','Miscount / data entry error','Other'];
 
     const enrichedLines = myLines.map(l => {
-      const confirmedVal = (l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined) ? Number(l.ConfirmedQty) : Number(l.QtySent||0);
+      const hasConfirmed = l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined;
+      const confirmedVal = hasConfirmed ? Number(l.ConfirmedQty) : Number(l.QtySent||0);
       const hasDelivered = l.DeliveredQty !== null && l.DeliveredQty !== '' && l.DeliveredQty !== undefined;
       const deliveredVal = hasDelivered ? Number(l.DeliveredQty) : Number(l.EffectiveQty||confirmedVal||0);
-      return Object.assign({}, l, { _confirmedVal: confirmedVal, _deliveredVal: deliveredVal, _hasDelivered: hasDelivered });
+      return Object.assign({}, l, { _confirmedVal: confirmedVal, _hasConfirmed: hasConfirmed, _deliveredVal: deliveredVal, _hasDelivered: hasDelivered });
     });
     const rowsHtml = enrichedLines.map(l => {
       const c = catalog.find(x => x.zSKU === l.zSKU) || {};
+      const short = l._hasConfirmed && Number(l.ConfirmedQty) < Number(l.QtySent||0);
+      const confirmedCell = confirmedEditableStage
+        ? `<input type="number" class="confirmQtyInput" min="0" value="${l._confirmedVal}" data-original="${l._confirmedVal}" style="width:80px;text-align:center;">`
+        : fmt(l._confirmedVal);
       const deliveredCell = deliveredEditableStage
         ? `<input type="number" class="deliveredQtyInput" min="0" value="${l._deliveredVal}" data-original="${l._deliveredVal}" style="width:80px;text-align:center;">`
         : fmt(l._hasDelivered ? l.DeliveredQty : (isDelivered || isCompleted ? l._deliveredVal : null));
+      const shortageCell = confirmedEditableStage
+        ? `<select class="shortageReasonSelect" data-original="${(l.ShortageReason||'').replace(/"/g,'&quot;')}" style="display:${short?'':'none'};font-size:11.5px;">
+            ${shortageReasons.map(r => `<option ${l.ShortageReason===r?'selected':''}>${r}</option>`).join('')}
+          </select>`
+        : `<span style="font-size:11.5px;color:var(--text-dim);">${l.ShortageReason||''}</span>`;
       return `
       <tr data-linenum="${l.LineNum}"><td class="sku">${c.SKU||''}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td>
         <td class="num">${fmt(l.QtySent)}</td>
-        <td class="num">${fmt(l._confirmedVal)}</td>
+        <td class="num">${confirmedCell}</td>
         <td class="num">${deliveredCell}</td>
-        <td style="font-size:11.5px;color:var(--text-dim);">${l.ShortageReason||''}</td></tr>`;
+        <td>${shortageCell}</td></tr>`;
     }).join('');
 
     const statusActions = [];
     if(isOpen) statusActions.push({ id:'confirmOpenBtn', label:'Confirm', primary:true, to:'Pending', confirmMsg:'Confirm this Sales Order and move it to Pending?' });
     if(isPending){
-      statusActions.push({ id:'confirmPendingBtn', label:'Confirm', primary:true, to:'Confirmed', confirmMsg:'Confirm this Sales Order?' });
+      statusActions.push({ id:'confirmPendingBtn', label:'Confirm', primary:true, to:'Confirmed', pick:true, confirmMsg:'Confirm picking and move this Sales Order to Confirmed?' });
       statusActions.push({ id:'backToOpenSOBtn', label:'Back to Open', primary:false, to:'Open', confirmMsg:'Move this Sales Order back to Open?' });
     }
     if(isConfirmed) statusActions.push({ id:'confirmDeliveryBtn', label:'Confirm delivery', primary:true, schedule:true });
@@ -1965,15 +1993,30 @@ async function renderSalesOrderDetail(){
           });
           return;
         }
-        const dirtyLineEdit = Array.from(document.querySelectorAll('.deliveredQtyInput'))
+        const dirtyLineEdit = Array.from(document.querySelectorAll('.deliveredQtyInput, .confirmQtyInput'))
           .some(inp => !inp.disabled && inp.value !== inp.dataset.original);
-        if(dirtyLineEdit && !a.pod){
-          alert('You have unsaved Delivered qty changes. Click "Confirm POD" to save and deliver, or refresh to discard them.');
+        if(dirtyLineEdit && !a.pod && !a.pick){
+          alert('You have unsaved Confirmed/Delivered qty changes. Click "Confirm" (or "Confirm POD") to save them, or refresh to discard.');
           return;
         }
         if(!confirm(a.confirmMsg)) return;
         btn.disabled = true;
         try{
+          if(a.pick){
+            // Same action as the warehouse's Picking screen — writes
+            // confirmed_qty (+ shortage reason) for every line via the
+            // shared updatePickingConfirmation call, then advances status.
+            for(const l of enrichedLines){
+              const row = document.querySelector(`tr[data-linenum="${l.LineNum}"]`);
+              const inp = row ? row.querySelector('.confirmQtyInput') : null;
+              const sel = row ? row.querySelector('.shortageReasonSelect') : null;
+              const shownVal = inp ? Number(inp.value||0) : l._confirmedVal;
+              const shownReason = sel && sel.style.display !== 'none' ? sel.value : '';
+              if(!l._hasConfirmed || Number(l.ConfirmedQty) !== shownVal || (l.ShortageReason||'') !== shownReason){
+                await apiPost('updatePickingConfirmation', { soNumber, lineNum: l.LineNum, confirmedQty: shownVal, shortageReason: shownReason });
+              }
+            }
+          }
           if(a.pod){
             // Same display-fallback pattern used for Confirmed/Received qty
             // elsewhere: the Delivered qty column defaults to Effective qty
@@ -2004,6 +2047,16 @@ async function renderSalesOrderDetail(){
     document.getElementById('main').appendChild(linesPanel);
     const soExportBtn = document.getElementById('soExportBtn');
     if(soExportBtn) soExportBtn.onclick = () => exportRows(myLines, `${soNumber}-lines.xlsx`, soNumber);
+    if(confirmedEditableStage){
+      document.querySelectorAll('.confirmQtyInput').forEach(inp => {
+        const row = inp.closest('tr');
+        const planned = Number(row.dataset.linenum ? (enrichedLines.find(l => String(l.LineNum)===row.dataset.linenum)||{}).QtySent : 0);
+        inp.oninput = () => {
+          const sel = row.querySelector('.shortageReasonSelect');
+          if(sel) sel.style.display = Number(inp.value) < planned ? '' : 'none';
+        };
+      });
+    }
 
     if(isCancelled){ return; } // no further edits on a cancelled order
 
