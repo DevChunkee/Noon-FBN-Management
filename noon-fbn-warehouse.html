@@ -208,7 +208,9 @@ const FIELD_MAPS = {
     dispatched_date:'DispatchedDate', delivered_date:'DeliveredDate', completed_date:'CompletedDate',
     shipment_day:'ShipmentDay', expected_sellable_date:'ExpectedSellableDate',
     total_units_sent:'TotalUnitsSent', total_confirmed_qty:'TotalConfirmedQty', total_effective_qty:'TotalEffectiveQty',
-    total_delivered_qty:'TotalDeliveredQty', status:'Status', raw_status:'RawStatus' },
+    total_delivered_qty:'TotalDeliveredQty', status:'Status', raw_status:'RawStatus',
+    delivery_location_id:'DeliveryLocationId', delivery_location_name:'DeliveryLocationName',
+    expected_delivery_date:'ExpectedDeliveryDate', expected_ship_day:'ExpectedShipDay' },
   salesOrderLine: { so_number:'SONumber', line_num:'LineNum', zsku:'zSKU', qty_sent:'QtySent',
     confirmed_qty:'ConfirmedQty', delivered_qty:'DeliveredQty', shortage_reason:'ShortageReason',
     effective_qty:'EffectiveQty', so_status:'SOStatus' },
@@ -518,13 +520,24 @@ async function renderDelivery(){
 // renderDelivery/renderDispatch) once the shipment day arrives.
 async function renderPickingPicker(){
   state.view = 'picking'; state.selectedSO = null; persistView();
-  $main.innerHTML = viewHead('Picking', 'Sales Orders confirmed by the office and ready to pick.') + panelShell();
+  $main.innerHTML = viewHead('Picking', 'Sales Orders confirmed by the office and ready to pick, most urgent first.') + panelShell();
   try{
     const orders = await apiGet('salesOrder');
-    const active = orders.filter(o => o.Status === 'Pending');
-    const cardsHtml = active.length ? active.slice().reverse().map(o => `
+    // Most urgent first: ExpectedShipDay is (Scheduled date, or else the
+    // office's Expected delivery date) minus the delivery location's
+    // transit days — computed server-side in v_sales_orders so it works
+    // even this early (Pending), well before Scheduled date is ever set.
+    // Orders with no date/location on file sort to the end, not the front.
+    const active = orders.filter(o => o.Status === 'Pending').slice().sort((a, b) => {
+      const da = a.ExpectedShipDay, db = b.ExpectedShipDay;
+      if(!da && !db) return 0;
+      if(!da) return 1;
+      if(!db) return -1;
+      return da < db ? -1 : da > db ? 1 : 0;
+    });
+    const cardsHtml = active.length ? active.map(o => `
       <div class="order-card" data-so="${o.SONumber}">
-        <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipDate||''} · ${o.Status||''}</div></div>
+        <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipDate||''} · ${o.Status||''}${o.ExpectedShipDay ? ' · ship by ' + o.ExpectedShipDay : ''}</div></div>
       </div>`).join('') : '';
     setPanel(cardsHtml || emptyState('Nothing ready to pick right now.'));
     document.querySelectorAll('.order-card[data-so]').forEach(card => {

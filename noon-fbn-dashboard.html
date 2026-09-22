@@ -266,7 +266,8 @@ const FIELD_MAPS = {
     shipment_day:'ShipmentDay', expected_sellable_date:'ExpectedSellableDate',
     total_units_sent:'TotalUnitsSent', total_confirmed_qty:'TotalConfirmedQty', total_effective_qty:'TotalEffectiveQty',
     total_delivered_qty:'TotalDeliveredQty', status:'Status', raw_status:'RawStatus',
-    delivery_location_id:'DeliveryLocationId', delivery_location_name:'DeliveryLocationName' },
+    delivery_location_id:'DeliveryLocationId', delivery_location_name:'DeliveryLocationName',
+    expected_delivery_date:'ExpectedDeliveryDate', expected_ship_day:'ExpectedShipDay' },
   salesOrderLine: { so_number:'SONumber', line_num:'LineNum', zsku:'zSKU', qty_sent:'QtySent',
     confirmed_qty:'ConfirmedQty', delivered_qty:'DeliveredQty', shortage_reason:'ShortageReason',
     effective_qty:'EffectiveQty', so_status:'SOStatus' },
@@ -346,8 +347,15 @@ async function apiPost(action, payload){
   let result;
   switch(action){
     case 'createSalesOrder': {
-      const { error } = await client.from('sales_orders').insert({ so_number: payload.soNumber, ship_date: payload.shipDate });
-      if(error) throw new Error(error.message); result = { ok:true }; break;
+      const { error } = await client.from('sales_orders').insert({
+        so_number: payload.soNumber, ship_date: payload.shipDate,
+        expected_delivery_date: payload.expectedDeliveryDate || null,
+        delivery_location_id: payload.deliveryLocationId ? Number(payload.deliveryLocationId) : null
+      });
+      if(error) throw new Error(error.code === '42703'
+        ? 'The database doesn\'t have expected_delivery_date yet — ask an admin to run migration 18_so_expected_delivery.sql.'
+        : error.message);
+      result = { ok:true }; break;
     }
     case 'createPurchaseOrder': {
       const { error } = await client.from('purchase_orders').insert({ po_number: payload.poNumber, po_date: payload.poDate, supplier: payload.supplier || null, expected_delivery: payload.expectedDelivery || null, status: 'Open' });
@@ -486,11 +494,12 @@ async function apiPost(action, payload){
       }
       const { error } = await client.from('sales_orders').update({
         ship_date: payload.shipDate,
+        expected_delivery_date: payload.expectedDeliveryDate || null,
         delivery_location_id: payload.deliveryLocationId ? Number(payload.deliveryLocationId) : null,
         scheduled_date: payload.scheduledDate || null
       }).eq('so_number', currentSoNumber);
       if(error) throw new Error(error.code === '42703'
-        ? 'The database doesn\'t have a delivery_location_id column yet — ask an admin to run migration 16_delivery_locations.sql.'
+        ? 'The database doesn\'t have a delivery_location_id/expected_delivery_date column yet — ask an admin to run migrations 16_delivery_locations.sql and 18_so_expected_delivery.sql.'
         : error.message);
       result = { ok:true, newSoNumber: currentSoNumber }; break;
     }
@@ -1756,16 +1765,22 @@ async function renderSalesOrders(){
 }
 
 async function openCreateSOModal(){
-  const nextNum = await apiGet('nextSONumber').catch(() => ({number:''}));
+  const [nextNum, locations] = await Promise.all([
+    apiGet('nextSONumber').catch(() => ({number:''})),
+    ensureDeliveryLocations().then(activeDeliveryLocations).catch(() => [])
+  ]);
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'createSOOverlay';
+  const locationOptionsHtml = `<option value="">—</option>` + locations.map(l => `<option value="${l.Id}">${l.LocationName}</option>`).join('');
   overlay.innerHTML = `
     <div class="modal">
       <div class="panel-head"><h3>Create a new Sales Order</h3></div>
       <form class="form" id="newSOForm">
         <div class="field"><label>SO number</label><input type="text" name="soNumber" value="${nextNum.number||''}" required></div>
         <div class="field"><label>Creation date</label><input type="date" name="shipDate" value="${today()}" required></div>
+        <div class="field"><label>Expected delivery date</label><input type="date" name="expectedDeliveryDate"></div>
+        <div class="field"><label>Delivery location</label><select name="deliveryLocationId">${locationOptionsHtml}</select></div>
         <div class="form-foot">
           <button class="btn primary" type="submit">Create & open</button>
           <button class="btn" type="button" id="createSOCancelBtn">Cancel</button>
@@ -1855,6 +1870,7 @@ async function openEditSOModal(header){
       <form class="form" id="editSOForm">
         <div class="field"><label>Sales Order number</label><input type="text" name="newSoNumber" required value="${header?String(header.SONumber).replace(/"/g,'&quot;'):''}"></div>
         <div class="field"><label>Creation date</label><input type="date" name="shipDate" required value="${header?header.ShipDate:''}"></div>
+        <div class="field"><label>Expected delivery date</label><input type="date" name="expectedDeliveryDate" value="${header&&header.ExpectedDeliveryDate?header.ExpectedDeliveryDate:''}"></div>
         <div class="field"><label>Delivery location</label><select name="deliveryLocationId">${optionsHtml}</select></div>
         <div class="field"><label>Delivery date</label><input type="date" name="scheduledDate" value="${header&&header.ScheduledDate?header.ScheduledDate:''}"></div>
         <div class="form-foot">
@@ -1965,6 +1981,7 @@ async function renderSalesOrderDetail(){
           ${canCancel ? `<button class="btn" id="cancelSOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>` : ''}
         </div></div>
       <div class="batch-bar" style="flex-wrap:wrap;"><label>Creation date</label><span>${header?header.ShipDate:''}</span>
+        <label>Expected delivery</label><span>${header&&header.ExpectedDeliveryDate?header.ExpectedDeliveryDate:'—'}</span>
         <label>Delivery location</label><span>${header&&header.DeliveryLocationName?header.DeliveryLocationName:'—'}</span>
         <label>Scheduled delivery</label><span>${header&&header.ScheduledDate?header.ScheduledDate:'—'}</span>
         <label>Shipment day</label><span>${header&&header.ShipmentDay?header.ShipmentDay:'—'}</span>
