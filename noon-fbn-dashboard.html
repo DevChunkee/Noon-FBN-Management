@@ -2707,7 +2707,7 @@ async function renderPurchaseOrderDetail(){
       statusActions.push({ id:'backToRFQBtn', label:'Back to RFQ', primary:false, to:'RFQ', confirmMsg:'Move this PO back to RFQ?' });
     }
     if(isReceived){
-      statusActions.push({ id:'validateBtn', label:'Validate', primary:true, to:'Validated', confirmMsg:'Validate this PO? This is its final stage.', requireField:'InvoiceNumber', requireMsg:'Enter an Invoice number (via Edit) before validating.' });
+      statusActions.push({ id:'validateBtn', label:'Validate', primary:true, to:'Validated', validate:true });
       statusActions.push({ id:'backToPOBtn', label:'Back to Purchase Order', primary:false, to:'Purchase Order', confirmMsg:'Move this PO back to Purchase Order?' });
     }
     if(isValidated){
@@ -2807,6 +2807,22 @@ async function renderPurchaseOrderDetail(){
                   await apiPost('updateWarehouseReceipt', { poNumber, lineNum: l.LineNum, receivedQty: delta });
                 }
               }
+              await apiPost('updatePOInvoiceNumber', { poNumber, value: invoiceNumber });
+              await apiPost('updatePOReceivedDate', { poNumber, value: receivedDate });
+              await apiPost('setPOStatus', { poNumber, status: a.to });
+              renderPurchaseOrderDetail();
+            }catch(e){ alert(e.message); btn.disabled = false; }
+          });
+          return;
+        }
+        if(a.validate){
+          // Same "collect what the transition needs, right there" pattern
+          // as Received and Validate — qty received is already locked by
+          // this stage (only editable back at Purchase Order), so this just
+          // needs Invoice number + Received date before moving to Validated.
+          openReceivedValidateModal(header && header.InvoiceNumber, (header && header.ReceivedDate) || today(), async (invoiceNumber, receivedDate) => {
+            btn.disabled = true;
+            try{
               await apiPost('updatePOInvoiceNumber', { poNumber, value: invoiceNumber });
               await apiPost('updatePOReceivedDate', { poNumber, value: receivedDate });
               await apiPost('setPOStatus', { poNumber, status: a.to });
