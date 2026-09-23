@@ -2069,6 +2069,12 @@ async function renderSalesOrderDetail(){
     const isDelivered = status === 'Delivered';
     const isCompleted = status === 'Completed';
     const isCancelled = status === 'Cancelled';
+    // Scheduled delivery / Shipment day only mean anything once "Confirm
+    // delivery" has actually run (Scheduled onward) — before that they're
+    // just empty fields, so Expected delivery (the rough pre-scheduling
+    // estimate) is what's shown instead. Once scheduled, the real date
+    // supersedes the estimate, so the two swap rather than both showing.
+    const isScheduledOrLater = isScheduledRaw || isInTransit || isDelivered || isCompleted;
     const deliveredEditableStage = isInTransit;
     // Confirmed Qty (picking) is editable right on this screen while the
     // order is Pending — the exact same step as the warehouse's Picking
@@ -2159,10 +2165,10 @@ async function renderSalesOrderDetail(){
           ${canCancel ? `<button class="btn" id="cancelSOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>` : ''}
         </div></div>
       <div class="batch-bar" style="flex-wrap:wrap;"><label>Creation date</label><span>${header?header.ShipDate:''}</span>
-        <label>Expected delivery</label><span>${header&&header.ExpectedDeliveryDate?header.ExpectedDeliveryDate:'—'}</span>
+        ${!isScheduledOrLater ? `<label>Expected delivery</label><span>${header&&header.ExpectedDeliveryDate?header.ExpectedDeliveryDate:'—'}</span>` : ''}
         <label>Delivery location</label><span>${header&&header.DeliveryLocationName?header.DeliveryLocationName:'—'}</span>
-        <label>Scheduled delivery</label><span>${header&&header.ScheduledDate?header.ScheduledDate:'—'}</span>
-        <label>Shipment day</label><span>${header&&header.ShipmentDay?header.ShipmentDay:'—'}</span>
+        ${!isOpen && isScheduledOrLater ? `<label>Scheduled delivery</label><span>${header&&header.ScheduledDate?header.ScheduledDate:'—'}</span>
+        <label>Shipment day</label><span>${header&&header.ShipmentDay?header.ShipmentDay:'—'}</span>` : ''}
         <label>Status</label><span>${soStatusChip(status)}</span>
         <label>Expected sellable</label><span>${header?header.ExpectedSellableDate:''}</span>
         <button class="btn" id="editSOBtn" style="margin-left:auto;">Edit</button></div>
