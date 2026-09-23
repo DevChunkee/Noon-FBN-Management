@@ -518,6 +518,19 @@ async function apiPost(action, payload){
         : error.message);
       result = { ok:true, newSoNumber: currentSoNumber }; break;
     }
+    case 'updateSODeliveryFields': {
+      // Lightweight partial update for the SO detail screen's inline
+      // Delivery location / Scheduled delivery fields (shown only while
+      // Confirmed and still empty) — touches only whichever of the two was
+      // actually sent, unlike updateSalesOrder which rewrites the whole
+      // header and requires every field.
+      const patch = {};
+      if(payload.scheduledDate !== undefined) patch.scheduled_date = payload.scheduledDate || null;
+      if(payload.deliveryLocationId !== undefined) patch.delivery_location_id = payload.deliveryLocationId ? Number(payload.deliveryLocationId) : null;
+      if(!Object.keys(patch).length) throw new Error('Nothing to save.');
+      const { error } = await client.from('sales_orders').update(patch).eq('so_number', payload.soNumber);
+      if(error) throw new Error(error.message); result = { ok:true }; break;
+    }
     case 'addDeliveryLocation': {
       const { error } = await client.from('delivery_locations').insert({
         location_name: payload.locationName, location_address: payload.locationAddress || null,
@@ -626,8 +639,12 @@ async function apiPost(action, payload){
       const { error } = await client.from('purchase_order_lines').delete().eq('po_number', payload.poNumber).eq('line_num', Number(payload.lineNum));
       if(error) throw new Error(error.message); result = { ok:true }; break;
     }
-    case 'updatePickingConfirmation': {
-      const { error } = await client.from('sales_order_lines').update({ confirmed_qty: Number(payload.confirmedQty), shortage_reason: payload.shortageReason || null }).eq('so_number', payload.soNumber).eq('line_num', Number(payload.lineNum));
+    case 'deleteSalesOrderLine': {
+      const { data: existing, error: selErr } = await client.from('sales_order_lines').select('delivered_qty')
+        .eq('so_number', payload.soNumber).eq('line_num', Number(payload.lineNum)).single();
+      if(selErr) throw new Error(selErr.message);
+      if(existing && Number(existing.delivered_qty) > 0) throw new Error('This line already has delivered qty — it can\'t be deleted.');
+      const { error } = await client.from('sales_order_lines').delete().eq('so_number', payload.soNumber).eq('line_num', Number(payload.lineNum));
       if(error) throw new Error(error.message); result = { ok:true }; break;
     }
     case 'updateWarehouseReceipt': {
@@ -1948,6 +1965,12 @@ async function renderSalesOrderDetail(){
     // advances the order to Confirmed, same as the warehouse's own
     // "Confirm Picking" button.
     const confirmedEditableStage = isPending;
+    // Same idea as the PO screen's structLocked: once the order has actually
+    // shipped, its line structure (add/delete items) is locked — deleting a
+    // line the warehouse already picked, dispatched, or delivered would
+    // desync the shipment from what's on the SO. Editable up through
+    // Confirmed/Scheduled/Delivery (nothing's left the building yet).
+    const structLocked = isInTransit || isDelivered || isCompleted;
     const shortageReasons = ['Stock shortfall - need to investigate','Reserved for another order','Damaged in warehouse','Miscount / data entry error','Other'];
 
     const enrichedLines = myLines.map(l => {
@@ -1977,8 +2000,23 @@ async function renderSalesOrderDetail(){
         <td class="num">${fmt(l.SellingPrice)}</td><td class="num">${fmt(l.LineTotal)}</td>
         <td class="num">${confirmedCell}</td>
         <td class="num">${deliveredCell}</td>
-        <td>${shortageCell}</td></tr>`;
+        <td>${shortageCell}</td>
+        <td>${structLocked ? '' : `<button type="button" class="btn deleteLineBtn" data-linenum="${l.LineNum}" style="color:var(--red);" title="Delete this line">✕</button>`}</td></tr>`;
     }).join('');
+
+    // While Confirmed, "Delivery location"/"Scheduled delivery" on the
+    // summary row become live input fields whenever they're still empty —
+    // a shortcut so the office can fill them in right there instead of
+    // opening Edit or Confirm delivery. Once a value is on file, each one
+    // goes back to being the plain read-only text the summary row normally
+    // shows for every other field.
+    const needsLocationInline = isConfirmed && !(header && header.DeliveryLocationName);
+    const needsScheduledInline = isConfirmed && !(header && header.ScheduledDate);
+    let confirmDeliveryLocations = [];
+    if(needsLocationInline){
+      try{ confirmDeliveryLocations = activeDeliveryLocations(await ensureDeliveryLocations()); }
+      catch(e){ /* inline picker just won't have options — Edit/Confirm delivery still work */ }
+    }
 
     const totalPlannedQty = enrichedLines.reduce((s,l) => s + Number(l.QtySent||0), 0);
     const totalPlannedValue = enrichedLines.reduce((s,l) => s + Number(l.LineTotal||0), 0);
@@ -2007,8 +2045,13 @@ async function renderSalesOrderDetail(){
         </div></div>
       <div class="batch-bar" style="flex-wrap:wrap;"><label>Creation date</label><span>${header?header.ShipDate:''}</span>
         <label>Expected delivery</label><span>${header&&header.ExpectedDeliveryDate?header.ExpectedDeliveryDate:'—'}</span>
-        <label>Delivery location</label><span>${header&&header.DeliveryLocationName?header.DeliveryLocationName:'—'}</span>
-        <label>Scheduled delivery</label><span>${header&&header.ScheduledDate?header.ScheduledDate:'—'}</span>
+        <label>Delivery location</label>${needsLocationInline
+          ? `<select id="inlineDeliveryLocationInput" style="min-width:150px;"><option value="">Select…</option>${confirmDeliveryLocations.map(l => `<option value="${l.Id}">${l.LocationName}</option>`).join('')}</select>`
+          : `<span>${header&&header.DeliveryLocationName?header.DeliveryLocationName:'—'}</span>`}
+        <label>Scheduled delivery</label>${needsScheduledInline
+          ? `<input type="date" id="inlineScheduledDateInput" style="width:150px;">`
+          : `<span>${header&&header.ScheduledDate?header.ScheduledDate:'—'}</span>`}
+        ${(needsLocationInline || needsScheduledInline) ? `<button class="btn" id="saveInlineDeliveryBtn" style="padding:8px 12px;font-size:12.5px;">Save</button>` : ''}
         <label>Shipment day</label><span>${header&&header.ShipmentDay?header.ShipmentDay:'—'}</span>
         <label>Status</label><span>${soStatusChip(status)}</span>
         <label>Expected sellable</label><span>${header?header.ExpectedSellableDate:''}</span>
@@ -2022,6 +2065,17 @@ async function renderSalesOrderDetail(){
       catch(e){ alert('Could not cancel: ' + e.message); }
     };
     document.getElementById('editSOBtn').onclick = () => openEditSOModal(header);
+    const saveInlineDeliveryBtn = document.getElementById('saveInlineDeliveryBtn');
+    if(saveInlineDeliveryBtn) saveInlineDeliveryBtn.onclick = async () => {
+      const locInput = document.getElementById('inlineDeliveryLocationInput');
+      const dateInput = document.getElementById('inlineScheduledDateInput');
+      const payload = { soNumber };
+      if(locInput) payload.deliveryLocationId = locInput.value;
+      if(dateInput) payload.scheduledDate = dateInput.value;
+      saveInlineDeliveryBtn.disabled = true;
+      try{ await apiPost('updateSODeliveryFields', payload); renderSalesOrderDetail(); }
+      catch(e){ alert(e.message); saveInlineDeliveryBtn.disabled = false; }
+    };
 
     statusActions.forEach(a => {
       const btn = document.getElementById(a.id);
@@ -2084,7 +2138,7 @@ async function renderSalesOrderDetail(){
     linesPanel.innerHTML = `
       <div class="panel-head"><h3>${myLines.length} line item(s)</h3>
         ${myLines.length ? exportBtnHtml('soExportBtn','Export lines') : ''}</div>
-      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th><th class="num">Selling price</th><th class="num">Line total</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Shortage reason</th></tr></thead>
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th><th class="num">Selling price</th><th class="num">Line total</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Shortage reason</th><th></th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
         <div class="batch-bar" style="flex-wrap:wrap;border-top:1px solid var(--border);font-weight:600;">
           <label>Total planned qty</label><span>${fmt(totalPlannedQty)}</span>
@@ -2109,6 +2163,17 @@ async function renderSalesOrderDetail(){
         };
       });
     }
+    document.querySelectorAll('.deleteLineBtn').forEach(btn => {
+      btn.onclick = async () => {
+        const lineNum = btn.dataset.linenum;
+        if(!confirm('Delete this line item? This can\'t be undone.')) return;
+        btn.disabled = true;
+        try{
+          await apiPost('deleteSalesOrderLine', { soNumber, lineNum });
+          renderSalesOrderDetail();
+        }catch(e){ alert(e.message); btn.disabled = false; }
+      };
+    });
 
     if(isCancelled){ return; } // no further edits on a cancelled order
 
