@@ -596,6 +596,7 @@ async function renderPicking(){
         </div>
         <div class="line-fields">
           <input type="number" class="confirmInput" min="0" value="${l.ConfirmedQty!==''&&l.ConfirmedQty!==undefined?l.ConfirmedQty:l.QtySent}">
+          <button class="btn confirmLineBtn" type="button">Confirm</button>
           <select class="shortage-select reasonSelect" style="display:${l.ConfirmedQty && l.ConfirmedQty < l.QtySent ? '' : 'none'};">
             ${reasons.map(r => `<option ${l.ShortageReason===r?'selected':''}>${r}</option>`).join('')}
           </select>
@@ -608,6 +609,7 @@ async function renderPicking(){
         <input type="text" id="scanInput" placeholder="Scan or type a barcode, then Enter">
         <button class="btn" id="scanCamBtn">📷</button>
       </div>
+      <div class="line-planned" id="confirmProgress" style="padding:10px 16px 0;"></div>
       ${rowsHtml}
       <div style="padding:16px;">
         <button class="btn primary full" id="confirmPickingBtn">Confirm Picking</button>
@@ -624,6 +626,29 @@ async function renderPicking(){
       };
     });
 
+    // "Confirm" beside each item's qty input, same as the Receipt screen:
+    // it locks that line in and hides its row so the picker can focus on
+    // what's left. Unlike Receipt's qty (which sums across repeated scans),
+    // Confirmed qty here is a single value per line, so there's nothing to
+    // bank — the input just keeps whatever was entered while hidden.
+    // Nothing is written to the database until "Confirm Picking" is pressed;
+    // scanning the item again (or refreshing) brings a hidden row back.
+    const totalLines = document.querySelectorAll('.line-row').length;
+    const updateConfirmProgress = () => {
+      const confirmedCount = document.querySelectorAll('.line-row.confirmed-hidden').length;
+      const p = document.getElementById('confirmProgress');
+      if(p) p.textContent = `${confirmedCount} of ${totalLines} confirmed`;
+    };
+    document.querySelectorAll('.confirmLineBtn').forEach(btn => {
+      btn.onclick = () => {
+        const row = btn.closest('.line-row');
+        row.classList.add('confirmed-hidden');
+        row.style.display = 'none';
+        updateConfirmProgress();
+      };
+    });
+    updateConfirmProgress();
+
     const scanInput = document.getElementById('scanInput');
     const handleScan = (code) => {
       const z = resolveZsku(code, catalog);
@@ -631,10 +656,13 @@ async function renderPicking(){
       if(!z){ scanInput.value = ''; alert('No catalog match for: ' + code); return; }
       const row = document.querySelector(`.line-row[data-zsku="${z}"]`);
       if(!row){ scanInput.value = ''; alert('That SKU is not on this order.'); return; }
+      row.classList.remove('confirmed-hidden');
+      row.style.display = '';
       row.classList.add('highlight');
       row.scrollIntoView({ behavior:'smooth', block:'center' });
       row.querySelector('.confirmInput').focus();
       scanInput.value = '';
+      updateConfirmProgress();
     };
     scanInput.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); handleScan(scanInput.value.trim()); } };
     document.getElementById('scanCamBtn').onclick = () => openScanModal(handleScan);
