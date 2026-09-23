@@ -939,12 +939,36 @@ function templateBtnHtml(id, label){
 // is deliberate: it survives a refresh but clears itself once the tab/app
 // is actually closed, matching "as long as I didn't close the browser".
 const VIEW_STORAGE_KEY = 'noonFbnDashboardView';
+// In-app navigation stack, kept in step with persistView()'s own
+// sessionStorage bookkeeping and mirrored onto the browser's History API —
+// so the browser/device Back button steps back through in-app screens (an
+// order detail back to its list, say) instead of leaving the app outright.
+let navStack = [];
+let restoringNav = false;
+function pushNavEntry(){
+  const snapshot = { view: state.view, selectedSO: state.selectedSO, selectedPO: state.selectedPO };
+  const last = navStack[navStack.length - 1];
+  if(last && last.view === snapshot.view && last.selectedSO === snapshot.selectedSO && last.selectedPO === snapshot.selectedPO) return;
+  navStack.push(snapshot);
+  if(!restoringNav) history.pushState({ navIndex: navStack.length - 1 }, '');
+}
+window.addEventListener('popstate', () => {
+  if(navStack.length <= 1) return; // nothing further back in-app — let the browser handle it
+  navStack.pop();
+  const prev = navStack[navStack.length - 1];
+  restoringNav = true;
+  state.view = prev.view; state.selectedSO = prev.selectedSO; state.selectedPO = prev.selectedPO;
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === state.view));
+  render();
+  restoringNav = false;
+});
 function persistView(){
   try{
     sessionStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify({
       view: state.view, selectedPO: state.selectedPO, selectedSO: state.selectedSO
     }));
   }catch(e){ /* private-browsing / storage disabled — just skip persisting */ }
+  pushNavEntry();
 }
 function restoreView(){
   try{
@@ -3663,6 +3687,10 @@ document.querySelectorAll('.nav-item').forEach(n => n.onclick = () => switchView
 
 (async function init(){
   restoreView(); // land back on whatever screen/order was open before a refresh
+  // Seed the nav stack with wherever we just landed, via replaceState (not
+  // pushState) so the initial load doesn't leave a duplicate back-target.
+  navStack = [{ view: state.view, selectedSO: state.selectedSO, selectedPO: state.selectedPO }];
+  try{ history.replaceState({ navIndex: 0 }, ''); }catch(e){ /* ignore */ }
   await loadConfig();
   if(state.config && state.config.url && state.config.key){
     try{
