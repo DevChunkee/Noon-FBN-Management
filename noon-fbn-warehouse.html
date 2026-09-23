@@ -60,6 +60,7 @@
   .chip.amber{background:rgba(232,163,61,.15);color:var(--amber);}
   .chip.green{background:rgba(79,178,134,.15);color:var(--green);}
   .chip.red{background:rgba(217,115,110,.15);color:var(--red);}
+  .chip.blue{background:rgba(91,141,239,.15);color:var(--blue);}
 
   .line-row{padding:14px 16px;border-bottom:1px solid var(--border);}
   .line-row:last-child{border-bottom:none;}
@@ -454,13 +455,19 @@ async function renderOverview(){
   try{
     const [soOrders, poOrders] = await Promise.all([apiGet('salesOrder'), apiGet('purchaseOrder')]);
     // Picking now happens as soon as an order is confirmed to "Pending" by
-    // the office (not waiting for its shipment day). "Ready to ship" tracks
-    // orders that have already been picked and are just waiting for
-    // Dispatch — Scheduled orders auto-flip to "Delivery" once their
-    // shipment day arrives (scheduled date minus the delivery location's
-    // shipment_days), no button click needed.
+    // the office (not waiting for its shipment day).
     const pendingPicks = soOrders.filter(o => o.Status === 'Pending').length;
-    const readyToShip = soOrders.filter(o => o.Status === 'Delivery').length;
+    // "Delivery" mirrors the Delivery screen's own Overdue/Today/Tomorrow
+    // split — every Scheduled order (raw status; covers both the
+    // not-yet-due "Scheduled" display and the due-today "Delivery" display)
+    // bucketed by its computed ShipmentDay against today/tomorrow.
+    const todayStr = today();
+    const tmrw = new Date(); tmrw.setDate(tmrw.getDate() + 1);
+    const tomorrowStr = tmrw.toISOString().slice(0,10);
+    const scheduledOrders = soOrders.filter(o => o.RawStatus === 'Scheduled');
+    const overdueCount = scheduledOrders.filter(o => o.ShipmentDay && o.ShipmentDay < todayStr).length;
+    const todayCount = scheduledOrders.filter(o => o.ShipmentDay === todayStr).length;
+    const tomorrowCount = scheduledOrders.filter(o => o.ShipmentDay === tomorrowStr).length;
     const inTransitCount = soOrders.filter(o => o.Status === 'In transit').length;
     const pendingReceipts = poOrders.filter(o => o.Status === 'Purchase Order').length;
 
@@ -470,8 +477,12 @@ async function renderOverview(){
         <span class="chip ${pendingPicks ? 'amber' : 'green'}">${pendingPicks ? 'Needs attention' : 'All clear'}</span>
       </div>
       <div class="order-card" id="overviewDelivery">
-        <div><div class="id">Ready to ship</div><div class="meta">${readyToShip} Sales Order(s) waiting on Dispatch</div></div>
-        <span class="chip ${readyToShip ? 'amber' : 'green'}">${readyToShip ? 'Needs attention' : 'All clear'}</span>
+        <div><div class="id">Delivery</div><div class="meta">${scheduledOrders.length} Sales Order(s) scheduled</div></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+          ${overdueCount ? `<span class="chip red">Overdue ${overdueCount}</span>` : ''}
+          <span class="chip ${todayCount ? 'amber' : 'green'}">Today ${todayCount}</span>
+          <span class="chip ${tomorrowCount ? 'blue' : 'green'}">Tomorrow ${tomorrowCount}</span>
+        </div>
       </div>
       <div class="order-card" id="overviewInTransit">
         <div><div class="id">In-transit</div><div class="meta">${inTransitCount} Sales Order(s) dispatched, awaiting POD</div></div>
@@ -514,13 +525,15 @@ async function renderDelivery(){
     const tmrw = new Date(); tmrw.setDate(tmrw.getDate() + 1);
     const tomorrowStr = tmrw.toISOString().slice(0,10);
 
-    // Today's bucket also catches anything overdue (shipment day already
-    // passed but somehow not yet dispatched) — those need attention first,
-    // not to be buried under "Scheduled".
-    const todayList = [], tomorrowList = [], scheduledList = [];
+    // Overdue is its own bucket now (shipment day already passed but still
+    // not dispatched) — shown only when there's actually something overdue,
+    // so it doesn't clutter the screen on a normal day. Today/Tomorrow/
+    // Scheduled always show, even empty, same as before.
+    const overdueList = [], todayList = [], tomorrowList = [], scheduledList = [];
     scheduled.forEach(o => {
       const d = o.ShipmentDay;
-      if(d && d <= todayStr) todayList.push(o);
+      if(d && d < todayStr) overdueList.push(o);
+      else if(d === todayStr) todayList.push(o);
       else if(d === tomorrowStr) tomorrowList.push(o);
       else scheduledList.push(o);
     });
@@ -531,19 +544,22 @@ async function renderDelivery(){
       if(!db) return -1;
       return da < db ? -1 : da > db ? 1 : 0;
     };
-    [todayList, tomorrowList, scheduledList].forEach(list => list.sort(byShipmentDay));
+    [overdueList, todayList, tomorrowList, scheduledList].forEach(list => list.sort(byShipmentDay));
 
-    const cardHtml = (o) => `
+    const cardHtml = (o, chipClass, chipLabel) => `
       <div class="order-card" data-so="${o.SONumber}">
         <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipmentDay ? 'ship '+o.ShipmentDay+' · ' : ''}${o.ShipDate||''} · ${o.lineCount} line(s)</div></div>
-        <span class="chip ${o.Status==='Delivery'?'amber':'green'}">${o.Status==='Delivery'?'Ready to dispatch':'Scheduled'}</span>
+        <span class="chip ${chipClass}">${chipLabel}</span>
       </div>`;
-    const section = (label, list) => `
+    const section = (label, list, chipClass, chipLabel) => `
       <div class="panel-head"><h3>${label} (${list.length})</h3></div>
-      ${list.length ? list.map(cardHtml).join('') : emptyState(`Nothing in ${label.toLowerCase()}.`)}`;
+      ${list.length ? list.map(o => cardHtml(o, chipClass, chipLabel)).join('') : emptyState(`Nothing in ${label.toLowerCase()}.`)}`;
 
     setPanel(scheduled.length
-      ? section('Today', todayList) + section('Tomorrow', tomorrowList) + section('Scheduled', scheduledList)
+      ? (overdueList.length ? section('Overdue', overdueList, 'red', 'Overdue') : '')
+        + section('Today', todayList, 'amber', 'Ready to dispatch')
+        + section('Tomorrow', tomorrowList, 'blue', 'Scheduled')
+        + section('Scheduled', scheduledList, 'green', 'Scheduled')
       : emptyState('Nothing scheduled right now — orders show up here once "Confirm delivery" is done.'));
     document.querySelectorAll('.order-card[data-so]').forEach(card => {
       card.onclick = () => { state.selectedSO = card.dataset.so; renderDispatch(); };
