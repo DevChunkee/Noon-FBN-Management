@@ -6,7 +6,7 @@
 <title>Noon FBN Console</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
   :root{
@@ -2246,10 +2246,15 @@ async function renderSalesOrderDetail(){
   document.getElementById('backToSO').onclick = (e) => { e.preventDefault(); state.selectedSO = null; renderSalesOrders(); };
   try{
     const catalog = await ensureCatalog();
-    const [orders, lines] = await Promise.all([apiGet('salesOrder'), apiGet('salesOrderLine')]);
+    const [orders, lines, internalRows] = await Promise.all([apiGet('salesOrder'), apiGet('salesOrderLine'), apiGet('internalReplenishment').catch(() => [])]);
     if(myToken !== soRenderToken) return; // a newer render started while we were fetching — don't append stale panels
     const header = orders.find(o => o.SONumber === soNumber);
     const myLines = lines.filter(l => l.SONumber === soNumber);
+    // Current Internal WH on-hand per zSKU — Confirmed qty's default (before
+    // anyone's picked/edited it) is capped to whatever's actually available
+    // there, not just the planned qty, since planned can be more than the
+    // warehouse can actually pick for this order.
+    const internalOnHandMap = new Map(internalRows.map(r => [r.zSKU, Number(r.InternalOnHand)||0]));
     const status = header ? header.Status : '';       // effective/display status
     const rawStatus = header ? header.RawStatus : '';  // stored status (Scheduled stays Scheduled even once it displays as Delivery)
     const isOpen = status === 'Open';
@@ -2298,11 +2303,15 @@ async function renderSalesOrderDetail(){
     const shortageReasons = ['Stock shortfall - need to investigate','Reserved for another order','Damaged in warehouse','Miscount / data entry error','Other'];
 
     const enrichedLines = myLines.map(l => {
+      const availableQty = internalOnHandMap.has(l.zSKU) ? internalOnHandMap.get(l.zSKU) : 0;
       const hasConfirmed = l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined;
-      const confirmedVal = hasConfirmed ? Number(l.ConfirmedQty) : Number(l.QtySent||0);
+      // Default (nothing confirmed yet) is capped to whatever's actually
+      // available in Internal WH right now — never more than that, even if
+      // Planned qty asks for more.
+      const confirmedVal = hasConfirmed ? Number(l.ConfirmedQty) : Math.min(Number(l.QtySent||0), availableQty);
       const hasDelivered = l.DeliveredQty !== null && l.DeliveredQty !== '' && l.DeliveredQty !== undefined;
       const deliveredVal = hasDelivered ? Number(l.DeliveredQty) : Number(l.EffectiveQty||confirmedVal||0);
-      return Object.assign({}, l, { _confirmedVal: confirmedVal, _hasConfirmed: hasConfirmed, _deliveredVal: deliveredVal, _hasDelivered: hasDelivered });
+      return Object.assign({}, l, { _availableQty: availableQty, _confirmedVal: confirmedVal, _hasConfirmed: hasConfirmed, _deliveredVal: deliveredVal, _hasDelivered: hasDelivered });
     });
     const rowsHtml = enrichedLines.map(l => {
       const c = catalog.find(x => x.zSKU === l.zSKU) || {};
@@ -2318,9 +2327,11 @@ async function renderSalesOrderDetail(){
             ${shortageReasons.map(r => `<option ${l.ShortageReason===r?'selected':''}>${r}</option>`).join('')}
           </select>`
         : `<span style="font-size:11.5px;color:var(--text-dim);">${l.ShortageReason||''}</span>`;
+      const availableShort = Number(l._availableQty||0) < Number(l.QtySent||0);
       return `
       <tr data-linenum="${l.LineNum}"><td class="sku">${c.SKU||''}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td>
         <td class="num">${fmt(l.QtySent)}</td>
+        ${showConfirmedCol ? `<td class="num"${availableShort?' style="color:var(--amber);"':''}>${fmt(l._availableQty)}</td>` : ''}
         <td class="num">${fmt(l.SellingPrice)}</td><td class="num">${fmt(l.LineTotal)}</td>
         ${showConfirmedCol ? `<td class="num">${confirmedCell}</td>` : ''}
         ${showDeliveredCol ? `<td class="num">${deliveredCell}</td>` : ''}
@@ -2330,6 +2341,7 @@ async function renderSalesOrderDetail(){
 
     const totalPlannedQty = enrichedLines.reduce((s,l) => s + Number(l.QtySent||0), 0);
     const totalPlannedValue = enrichedLines.reduce((s,l) => s + Number(l.LineTotal||0), 0);
+    const totalAvailableQty = enrichedLines.reduce((s,l) => s + Number(l._availableQty||0), 0);
     const totalConfirmedQty = enrichedLines.reduce((s,l) => s + Number(l._confirmedVal||0), 0);
     const totalConfirmedValue = enrichedLines.reduce((s,l) => s + Number(l._confirmedVal||0) * Number(l.SellingPrice||0), 0);
     const totalDeliveredQty = enrichedLines.reduce((s,l) => s + Number(l._deliveredVal||0), 0);
@@ -2482,12 +2494,14 @@ async function renderSalesOrderDetail(){
     linesPanel.innerHTML = `
       <div class="panel-head"><h3>${myLines.length} line item(s)</h3>
         ${myLines.length ? exportBtnHtml('soExportBtn','Export lines') : ''}</div>
-      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th><th class="num">Selling price</th><th class="num">Line total</th>${showConfirmedCol ? '<th class="num">Confirmed</th>' : ''}${showDeliveredCol ? '<th class="num">Delivered</th>' : ''}<th>Shortage reason</th><th></th></tr></thead>
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th>${showConfirmedCol ? '<th class="num">Available</th>' : ''}<th class="num">Selling price</th><th class="num">Line total</th>${showConfirmedCol ? '<th class="num">Confirmed</th>' : ''}${showDeliveredCol ? '<th class="num">Delivered</th>' : ''}<th>Shortage reason</th><th></th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
         <div class="batch-bar" style="flex-wrap:wrap;border-top:1px solid var(--border);font-weight:600;">
           <label>Total planned qty</label><span>${fmt(totalPlannedQty)}</span>
           <label>Value</label><span>${fmt(totalPlannedValue)}</span>
           ${showConfirmedCol ? `<span style="color:var(--text-faint);font-weight:400;">|</span>
+          <label>Total available qty</label><span>${fmt(totalAvailableQty)}</span>
+          <span style="color:var(--text-faint);font-weight:400;">|</span>
           <label>Total confirmed qty</label><span>${fmt(totalConfirmedQty)}</span>
           <label>Value</label><span>${fmt(totalConfirmedValue)}</span>` : ''}
           ${showDeliveredCol ? `<span style="color:var(--text-faint);font-weight:400;">|</span>
