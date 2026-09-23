@@ -135,6 +135,17 @@ const $main = document.getElementById('main');
 function fmt(n){ if(n===null||n===undefined||n==='') return '—'; if(typeof n!=='number') return n;
   return Math.round(n*100)/100 === Math.round(n) ? Math.round(n).toLocaleString() : n.toFixed(2); }
 function today(){ return new Date().toISOString().slice(0,10); }
+function tomorrow(){ const d = new Date(); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); }
+// Human-friendly label for a YYYY-MM-DD date relative to today — used
+// wherever a date is more useful as "Overdue"/"Today"/"Tomorrow" than as a
+// raw date, e.g. the Receipt picker's Expected receiving date.
+function relativeDateLabel(dateStr){
+  if(!dateStr) return '';
+  if(dateStr < today()) return 'Overdue';
+  if(dateStr === today()) return 'Today';
+  if(dateStr === tomorrow()) return 'Tomorrow';
+  return dateStr;
+}
 
 // ---------------- Supabase connection + auth ----------------
 // Baked in so warehouse staff never see or type a Project URL/key — they only
@@ -861,11 +872,15 @@ async function renderReceiptPicker(){
     `);
 
     const renderCards = (list) => {
-      const cardsHtml = list.length ? list.map(o => `
+      const cardsHtml = list.length ? list.map(o => {
+        const rel = relativeDateLabel(o.ExpectedReceivingDate);
+        const expectedClass = rel === 'Overdue' ? 'style="color:var(--red);font-weight:600;"' : '';
+        return `
         <div class="order-card" data-po="${o.PONumber}">
-          <div><div class="id">${o.QuotationNumber || o.PONumber}</div><div class="meta">${o.Supplier||''} · PO ${o.PONumber} · received ${fmt(o.TotalReceivedQty)}/${fmt(o.TotalConfirmedQty)}${o.ExpectedReceivingDate ? ` · expected ${o.ExpectedReceivingDate}` : ''}</div></div>
+          <div><div class="id">${o.QuotationNumber || o.PONumber}</div><div class="meta">${o.Supplier||''} · PO ${o.PONumber} · received ${fmt(o.TotalReceivedQty)}/${fmt(o.TotalConfirmedQty)}${rel ? ` · <span ${expectedClass}>Expected ${rel}</span>` : ''}</div></div>
           <span class="chip amber">Pending</span>
-        </div>`).join('') : '';
+        </div>`;
+      }).join('') : '';
       const holder = document.getElementById('receiptCards');
       if(holder) holder.innerHTML = cardsHtml || emptyState('Nothing pending — no purchase orders are ready to receive right now.');
       document.querySelectorAll('.order-card[data-po]').forEach(card => {
