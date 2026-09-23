@@ -1895,6 +1895,38 @@ async function openScheduleDeliveryModal(defaultDate, defaultLocationId, onSubmi
   };
 }
 
+// Small popup asking for the supplier's quotation number (required) — same
+// pattern as openScheduleDeliveryModal for the Sales Order screen's "Confirm
+// delivery": the button collects what the transition needs right there
+// instead of requiring it be entered ahead of time via Edit.
+function openConfirmQuotationModal(defaultValue, onSubmit){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal">
+    <h3>Confirm quotation</h3>
+    <p style="color:var(--text-dim);font-size:13px;margin:-6px 0 14px;">Enter the supplier's quotation number. Confirmed qty becomes editable once this is saved.</p>
+    <div class="field"><label>Quotation number</label><input type="text" id="quoteNumberInput" value="${(defaultValue||'').replace(/"/g,'&quot;')}" style="width:100%;"></div>
+    <span class="msg err" id="quoteNumberErr" style="display:none;padding:6px 0 0;">Enter a quotation number.</span>
+    <div class="form-foot" style="margin-top:10px;">
+      <button class="btn primary" id="quoteNumberConfirm" style="flex:1;">Confirm quotation</button>
+      <button class="btn" id="quoteNumberCancel">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const input = document.getElementById('quoteNumberInput');
+  const err = document.getElementById('quoteNumberErr');
+  overlay.onclick = (e) => { if(e.target === overlay) overlay.remove(); };
+  document.getElementById('quoteNumberCancel').onclick = () => overlay.remove();
+  const submit = () => {
+    const value = input.value.trim();
+    if(!value){ err.style.display = ''; input.focus(); return; }
+    overlay.remove();
+    onSubmit(value);
+  };
+  document.getElementById('quoteNumberConfirm').onclick = submit;
+  input.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); submit(); } };
+}
+
 // "Edit" on the Order summary panel — lets the office correct the header
 // fields directly (creation date, delivery location, scheduled delivery
 // date) without going through the status-workflow buttons. Doesn't touch
@@ -2594,7 +2626,7 @@ async function renderPurchaseOrderDetail(){
       statusActions.push({ id:'confirmOrderBtn', label:'Confirm Order', primary:true, to:'RFQ', confirmMsg:'Confirm the Qty ordered and send this as an RFQ? Qty ordered will lock.' });
     }
     if(isRFQ){
-      statusActions.push({ id:'confirmQuoteBtn', label:'Confirm Quotation', primary:true, to:'Purchase Order', confirmMsg:'Confirm the supplier\'s quotation? Confirmed qty becomes editable.', requireField:'QuotationNumber', requireMsg:'Enter a Quotation number (via Edit) before confirming the quotation.' });
+      statusActions.push({ id:'confirmQuoteBtn', label:'Confirm Quotation', primary:true, to:'Purchase Order', quote:true });
       statusActions.push({ id:'backToOpenBtn', label:'Back to Open', primary:false, to:'Open', confirmMsg:'Move this PO back to Open? Qty ordered becomes editable again.' });
     }
     if(isPO){
@@ -2651,6 +2683,35 @@ async function renderPurchaseOrderDetail(){
           alert('You have unsaved line-item changes (Qty ordered / Confirmed qty / Qty received). Click "Save changes" first, then try again.');
           return;
         }
+        if(a.quote){
+          // Same pattern as the Sales Order screen's "Confirm delivery":
+          // the button opens a small form asking for the one thing this
+          // transition actually needs (here, the Quotation number) instead
+          // of requiring it be entered ahead of time via Edit.
+          openConfirmQuotationModal(header && header.QuotationNumber, async (quotationNumber) => {
+            btn.disabled = true;
+            try{
+              await apiPost('updatePOQuotationNumber', { poNumber, value: quotationNumber });
+              // Confirming the quotation is the moment Confirmed qty stops
+              // being editable per-line and starts being read everywhere
+              // (warehouse receiving, totals) as "confirmed_qty or Qty
+              // ordered". Write that same fallback value into confirmed_qty
+              // now, for every line that hasn't been individually
+              // overridden, so the stored data matches what's displayed
+              // instead of only ever existing as a display-time fallback.
+              // Must happen while still in RFQ — updatePOConfirmation only
+              // allows writes there.
+              for(const l of enrichedLines){
+                if(!l._isConfirmed){
+                  await apiPost('updatePOConfirmation', { poNumber, lineNum: l.LineNum, confirmedQty: l._confirmedVal });
+                }
+              }
+              await apiPost('setPOStatus', { poNumber, status: a.to });
+              renderPurchaseOrderDetail();
+            }catch(e){ alert(e.message); btn.disabled = false; }
+          });
+          return;
+        }
         if(a.requireField){
           const val = header ? (header[a.requireField]||'').toString().trim() : '';
           if(!val){ alert(a.requireMsg); return; }
@@ -2658,21 +2719,6 @@ async function renderPurchaseOrderDetail(){
         if(!confirm(a.confirmMsg)) return;
         btn.disabled = true;
         try{
-          if(a.id === 'confirmQuoteBtn'){
-            // Confirming the quotation is the moment Confirmed qty stops
-            // being editable per-line and starts being read everywhere
-            // (warehouse receiving, totals) as "confirmed_qty or Qty
-            // ordered". Write that same fallback value into confirmed_qty
-            // now, for every line that hasn't been individually overridden,
-            // so the stored data matches what's displayed instead of only
-            // ever existing as a display-time fallback. Must happen while
-            // still in RFQ — updatePOConfirmation only allows writes there.
-            for(const l of enrichedLines){
-              if(!l._isConfirmed){
-                await apiPost('updatePOConfirmation', { poNumber, lineNum: l.LineNum, confirmedQty: l._confirmedVal });
-              }
-            }
-          }
           if(a.id === 'receivedBtn' || a.id === 'receivedValidateBtn'){
             // Same display-fallback issue as Confirmed qty: the Qty received
             // column shows Confirmed qty as its default for any line that's
