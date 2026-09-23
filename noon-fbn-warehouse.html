@@ -12,7 +12,7 @@
   :root{
     --bg:#0F1115; --panel:#171A21; --panel-alt:#1D2129; --border:#272C36;
     --text:#E6E8EC; --text-dim:#8A93A3; --text-faint:#5A6270;
-    --amber:#E8A33D; --green:#4FB286; --blue:#5B8DEF; --red:#D9736E; --orange:#E88A3D; --yellow:#E0C93D;
+    --amber:#E8A33D; --green:#4FB286; --blue:#5B8DEF; --red:#D9736E; --orange:#E88A3D; --yellow:#E0C93D; --purple:#9B7EDE;
     --mono: 'IBM Plex Mono', ui-monospace, monospace;
     --sans: 'IBM Plex Sans', system-ui, sans-serif;
   }
@@ -63,6 +63,7 @@
   .chip.blue{background:rgba(91,141,239,.15);color:var(--blue);}
   .chip.orange{background:rgba(232,138,61,.15);color:var(--orange);}
   .chip.yellow{background:rgba(224,201,61,.18);color:var(--yellow);}
+  .chip.purple{background:rgba(155,126,222,.18);color:var(--purple);}
 
   .line-row{padding:14px 16px;border-bottom:1px solid var(--border);}
   .line-row:last-child{border-bottom:none;}
@@ -167,6 +168,16 @@ function pickingUrgencyBadge(dateStr){
   if(dateStr === tomorrow()) return { cls:'orange', label:'Tomorrow' };
   if(dateStr === daysFromToday(2)) return { cls:'yellow', label:'Next day' };
   return { cls:'blue', label: dateStr ? 'Upcoming' : 'Unscheduled' };
+}
+// Same urgency ladder as pickingUrgencyBadge, one step further (Delivery
+// cards get a 5th, lowest-urgency bucket: Purple for anything past the day
+// after tomorrow, since by then it's not worth flagging at all).
+function deliveryUrgencyBadge(dateStr){
+  if(dateStr && dateStr < today()) return { cls:'red', label:'Overdue' };
+  if(dateStr === today()) return { cls:'orange', label:'Today' };
+  if(dateStr === tomorrow()) return { cls:'yellow', label:'Tomorrow' };
+  if(dateStr === daysFromToday(2)) return { cls:'blue', label:'Next day' };
+  return { cls:'purple', label: dateStr ? dateStr : 'Unscheduled' };
 }
 
 // ---------------- Supabase connection + auth ----------------
@@ -521,12 +532,13 @@ async function renderOverview(){
     // not-yet-due "Scheduled" display and the due-today "Delivery" display)
     // bucketed by its computed ShipmentDay against today/tomorrow.
     const todayStr = today();
-    const tmrw = new Date(); tmrw.setDate(tmrw.getDate() + 1);
-    const tomorrowStr = tmrw.toISOString().slice(0,10);
+    const tomorrowStr = tomorrow();
+    const nextDayStr = daysFromToday(2);
     const scheduledOrders = soOrders.filter(o => o.RawStatus === 'Scheduled');
     const overdueCount = scheduledOrders.filter(o => o.ShipmentDay && o.ShipmentDay < todayStr).length;
     const todayCount = scheduledOrders.filter(o => o.ShipmentDay === todayStr).length;
     const tomorrowCount = scheduledOrders.filter(o => o.ShipmentDay === tomorrowStr).length;
+    const deliveryNextDayCount = scheduledOrders.filter(o => o.ShipmentDay === nextDayStr).length;
     const inTransitCount = soOrders.filter(o => o.Status === 'In transit').length;
     const pendingReceipts = poOrders.filter(o => o.Status === 'Purchase Order').length;
 
@@ -537,7 +549,6 @@ async function renderOverview(){
     // Each bucket that has anything in it gets its own colored "Needs
     // attention" badge, so the worst-case urgency is visible at a glance
     // without opening Picking.
-    const nextDayStr = daysFromToday(2);
     const pickOverdueCount = pendingPickOrders.filter(o => o.ExpectedShipDay && o.ExpectedShipDay < todayStr).length;
     const pickTodayCount = pendingPickOrders.filter(o => o.ExpectedShipDay === todayStr).length;
     const pickTomorrowCount = pendingPickOrders.filter(o => o.ExpectedShipDay === tomorrowStr).length;
@@ -559,10 +570,11 @@ async function renderOverview(){
       <div class="order-card" id="overviewDelivery">
         <div><div class="id">Delivery</div><div class="meta">${scheduledOrders.length} Sales Order(s) scheduled</div></div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
-          ${!overdueCount && !todayCount ? `<span class="chip green">All clear</span>` : ''}
-          ${overdueCount ? `<span class="chip red">Overdue ${overdueCount}</span>` : ''}
-          ${todayCount ? `<span class="chip amber">Today ${todayCount}</span>` : ''}
-          ${tomorrowCount ? `<span class="chip blue">Tomorrow ${tomorrowCount}</span>` : ''}
+          ${!overdueCount && !todayCount && !tomorrowCount && !deliveryNextDayCount ? `<span class="chip green">All clear</span>` : ''}
+          ${overdueCount ? `<span class="chip red" title="${overdueCount} overdue">Needs attention</span>` : ''}
+          ${todayCount ? `<span class="chip orange" title="${todayCount} due today">Needs attention</span>` : ''}
+          ${tomorrowCount ? `<span class="chip yellow" title="${tomorrowCount} due tomorrow">Needs attention</span>` : ''}
+          ${deliveryNextDayCount ? `<span class="chip blue" title="${deliveryNextDayCount} due the day after">Needs attention</span>` : ''}
         </div>
       </div>
       <div class="order-card" id="overviewInTransit">
@@ -589,59 +601,41 @@ async function renderOverview(){
 // review-and-Dispatch screen (no qty editing — that's already locked in).
 async function renderDelivery(){
   state.view = 'delivery'; persistView();
-  $main.innerHTML = viewHead('Delivery', 'Scheduled Sales Orders, grouped by shipment day. Tap one that\'s reached its shipment day to Dispatch.') + panelShell();
+  $main.innerHTML = viewHead('Delivery', 'Scheduled Sales Orders, most urgent first. Tap one that\'s reached its shipment day to Dispatch.') + panelShell();
   try{
     const orders = await apiGet('salesOrder');
     const lines = await apiGet('salesOrderLine');
     // Every order that's had "Confirm delivery" done (raw status stays
     // 'Scheduled' even once the shipment day arrives and it displays as
     // 'Delivery') — not just the ones ready to dispatch today, so the
-    // warehouse can see what's coming.
+    // warehouse can see what's coming. Sorted by Confirmed Shipment Day,
+    // same nulls-last pattern as Picking's Expected Ship Day sort, with a
+    // per-card urgency badge (see deliveryUrgencyBadge) instead of the
+    // section-per-bucket layout this used to have.
     const scheduled = orders.filter(o => o.RawStatus === 'Scheduled').map(o => {
       const myLines = lines.filter(l => l.SONumber === o.SONumber);
       return Object.assign({}, o, { lineCount: myLines.length });
-    });
-
-    const todayStr = today();
-    const tmrw = new Date(); tmrw.setDate(tmrw.getDate() + 1);
-    const tomorrowStr = tmrw.toISOString().slice(0,10);
-
-    // Overdue is its own bucket now (shipment day already passed but still
-    // not dispatched) — shown only when there's actually something overdue,
-    // so it doesn't clutter the screen on a normal day. Today/Tomorrow/
-    // Scheduled always show, even empty, same as before.
-    const overdueList = [], todayList = [], tomorrowList = [], scheduledList = [];
-    scheduled.forEach(o => {
-      const d = o.ShipmentDay;
-      if(d && d < todayStr) overdueList.push(o);
-      else if(d === todayStr) todayList.push(o);
-      else if(d === tomorrowStr) tomorrowList.push(o);
-      else scheduledList.push(o);
-    });
-    const byShipmentDay = (a, b) => {
+    }).sort((a, b) => {
       const da = a.ShipmentDay, db = b.ShipmentDay;
       if(!da && !db) return 0;
       if(!da) return 1;
       if(!db) return -1;
       return da < db ? -1 : da > db ? 1 : 0;
-    };
-    [overdueList, todayList, tomorrowList, scheduledList].forEach(list => list.sort(byShipmentDay));
+    });
 
-    const cardHtml = (o, chipClass, chipLabel) => `
-      <div class="order-card" data-so="${o.SONumber}">
-        <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipmentDay ? 'ship '+o.ShipmentDay+' · ' : ''}${o.ShipDate||''} · ${o.lineCount} line(s)</div></div>
-        <span class="chip ${chipClass}">${chipLabel}</span>
+    const cardsHtml = scheduled.length ? scheduled.map(o => {
+      const badge = deliveryUrgencyBadge(o.ShipmentDay);
+      return `
+      <div class="order-card" data-so="${o.SONumber}" style="display:block;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+          <div class="id">${o.SONumber}</div>
+          <span class="chip ${badge.cls}">${badge.label}</span>
+        </div>
+        <div class="meta">${o.ShipmentDay ? 'ship '+o.ShipmentDay+' · ' : ''}${o.ShipDate||''} · ${o.lineCount} line(s)</div>
       </div>`;
-    const section = (label, list, chipClass, chipLabel) => `
-      <div class="panel-head"><h3>${label} (${list.length})</h3></div>
-      ${list.length ? list.map(o => cardHtml(o, chipClass, chipLabel)).join('') : emptyState(`Nothing in ${label.toLowerCase()}.`)}`;
+    }).join('') : '';
 
-    setPanel(scheduled.length
-      ? (overdueList.length ? section('Overdue', overdueList, 'red', 'Overdue') : '')
-        + section('Today', todayList, 'amber', 'Ready to dispatch')
-        + section('Tomorrow', tomorrowList, 'blue', 'Scheduled')
-        + section('Scheduled', scheduledList, 'green', 'Scheduled')
-      : emptyState('Nothing scheduled right now — orders show up here once "Confirm delivery" is done.'));
+    setPanel(cardsHtml || emptyState('Nothing scheduled right now — orders show up here once "Confirm delivery" is done.'));
     document.querySelectorAll('.order-card[data-so]').forEach(card => {
       card.onclick = () => { state.selectedSO = card.dataset.so; renderDispatch(); };
     });
