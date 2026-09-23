@@ -2029,7 +2029,7 @@ async function renderSalesOrderDetail(){
     const canCancel = !isCancelled && !isCompleted;
 
     setPanel(`
-      <div class="panel-head"><h3>Order summary</h3>
+      <div class="panel-head"><h3>Sales Order - Summary</h3>
         <div style="display:flex;gap:8px;">
           ${statusActions.map(a => `<button class="btn${a.primary?' primary':''}" id="${a.id}">${a.label}</button>`).join('')}
           ${canCancel ? `<button class="btn" id="cancelSOBtn" style="border-color:var(--red);color:var(--red);">Cancel order</button>` : ''}
@@ -2588,7 +2588,7 @@ async function renderPurchaseOrderDetail(){
     }
 
     setPanel(`
-      <div class="panel-head"><h3>Order summary</h3>
+      <div class="panel-head"><h3>Purchase Order - Summary</h3>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           ${isCancelled ? `<span class="chip red">Cancelled</span>` : ''}
           ${isValidated ? `<span class="chip green">Validated</span>` : ''}
