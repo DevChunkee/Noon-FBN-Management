@@ -1971,6 +1971,13 @@ async function renderSalesOrderDetail(){
     // desync the shipment from what's on the SO. Editable up through
     // Confirmed/Scheduled/Delivery (nothing's left the building yet).
     const structLocked = isInTransit || isDelivered || isCompleted;
+    // Confirmed qty column only means anything once picking can happen
+    // (Pending onward); Delivered qty only means anything once it's
+    // actually being entered/exists (In transit onward, same stage
+    // deliveredEditableStage turns on) — same "hide until relevant" idea as
+    // the PO screen's showConfirmedCol/showReceivedCol.
+    const showConfirmedCol = !isOpen;
+    const showDeliveredCol = isInTransit || isDelivered || isCompleted;
     const shortageReasons = ['Stock shortfall - need to investigate','Reserved for another order','Damaged in warehouse','Miscount / data entry error','Other'];
 
     const enrichedLines = myLines.map(l => {
@@ -1998,8 +2005,8 @@ async function renderSalesOrderDetail(){
       <tr data-linenum="${l.LineNum}"><td class="sku">${c.SKU||''}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td>
         <td class="num">${fmt(l.QtySent)}</td>
         <td class="num">${fmt(l.SellingPrice)}</td><td class="num">${fmt(l.LineTotal)}</td>
-        <td class="num">${confirmedCell}</td>
-        <td class="num">${deliveredCell}</td>
+        ${showConfirmedCol ? `<td class="num">${confirmedCell}</td>` : ''}
+        ${showDeliveredCol ? `<td class="num">${deliveredCell}</td>` : ''}
         <td>${shortageCell}</td>
         <td>${structLocked ? '' : `<button type="button" class="btn deleteLineBtn" data-linenum="${l.LineNum}" style="color:var(--red);" title="Delete this line">✕</button>`}</td></tr>`;
     }).join('');
@@ -2138,17 +2145,17 @@ async function renderSalesOrderDetail(){
     linesPanel.innerHTML = `
       <div class="panel-head"><h3>${myLines.length} line item(s)</h3>
         ${myLines.length ? exportBtnHtml('soExportBtn','Export lines') : ''}</div>
-      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th><th class="num">Selling price</th><th class="num">Line total</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Shortage reason</th><th></th></tr></thead>
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th><th class="num">Selling price</th><th class="num">Line total</th>${showConfirmedCol ? '<th class="num">Confirmed</th>' : ''}${showDeliveredCol ? '<th class="num">Delivered</th>' : ''}<th>Shortage reason</th><th></th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
         <div class="batch-bar" style="flex-wrap:wrap;border-top:1px solid var(--border);font-weight:600;">
           <label>Total planned qty</label><span>${fmt(totalPlannedQty)}</span>
           <label>Value</label><span>${fmt(totalPlannedValue)}</span>
-          <span style="color:var(--text-faint);font-weight:400;">|</span>
+          ${showConfirmedCol ? `<span style="color:var(--text-faint);font-weight:400;">|</span>
           <label>Total confirmed qty</label><span>${fmt(totalConfirmedQty)}</span>
-          <label>Value</label><span>${fmt(totalConfirmedValue)}</span>
-          <span style="color:var(--text-faint);font-weight:400;">|</span>
+          <label>Value</label><span>${fmt(totalConfirmedValue)}</span>` : ''}
+          ${showDeliveredCol ? `<span style="color:var(--text-faint);font-weight:400;">|</span>
           <label>Total delivered qty</label><span>${fmt(totalDeliveredQty)}</span>
-          <label>Value</label><span>${fmt(totalDeliveredValue)}</span>
+          <label>Value</label><span>${fmt(totalDeliveredValue)}</span>` : ''}
         </div>` : emptyState('No items yet — add one below or import a file.')}`;
     document.getElementById('main').appendChild(linesPanel);
     const soExportBtn = document.getElementById('soExportBtn');
