@@ -287,7 +287,8 @@ const FIELD_MAPS = {
     confirmed_qty:'ConfirmedQty', delivered_qty:'DeliveredQty', shortage_reason:'ShortageReason',
     effective_qty:'EffectiveQty', so_status:'SOStatus', selling_price:'SellingPrice', line_total:'LineTotal' },
   purchaseOrder: { po_number:'PONumber', po_date:'PODate', supplier:'Supplier', expected_delivery:'ExpectedDelivery',
-    status:'Status', quotation_number:'QuotationNumber', invoice_number:'InvoiceNumber', received_date:'ReceivedDate', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
+    status:'Status', quotation_number:'QuotationNumber', invoice_number:'InvoiceNumber', received_date:'ReceivedDate',
+    expected_receiving_date:'ExpectedReceivingDate', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
     total_received_qty:'TotalReceivedQty' },
   purchaseOrderLine: { po_number:'PONumber', line_num:'LineNum', zsku:'zSKU', sku:'SKU', qty_ordered:'QtyOrdered',
     unit_cost:'UnitCost', line_total:'LineTotal', qty_received:'QtyReceived', confirmed_qty:'ConfirmedQty',
@@ -429,6 +430,13 @@ async function apiPost(action, payload){
       const { error } = await client.from('purchase_orders').update({ quotation_number: payload.value || null }).eq('po_number', payload.poNumber);
       if(error) throw new Error(error.code === '42703'
         ? 'The database doesn\'t have a quotation_number column yet — run migration 11_po_quotation_invoice.sql in Supabase, then try again.'
+        : error.message);
+      result = { ok:true }; break;
+    }
+    case 'updatePOExpectedReceivingDate': {
+      const { error } = await client.from('purchase_orders').update({ expected_receiving_date: payload.value || null }).eq('po_number', payload.poNumber);
+      if(error) throw new Error(error.code === '42703'
+        ? 'The database doesn\'t have an expected_receiving_date column yet — run migration 22_po_expected_receiving_date.sql in Supabase, then try again.'
         : error.message);
       result = { ok:true }; break;
     }
@@ -1899,14 +1907,35 @@ async function openScheduleDeliveryModal(defaultDate, defaultLocationId, onSubmi
 // pattern as openScheduleDeliveryModal for the Sales Order screen's "Confirm
 // delivery": the button collects what the transition needs right there
 // instead of requiring it be entered ahead of time via Edit.
-function openConfirmQuotationModal(defaultValue, onSubmit){
+// "Within days" options for Expected receiving date — picking one fills the
+// date field from today + N days. Offsets run +1 (Tomorrow) through +7,
+// covering every day in between so the date can always be set from the
+// dropdown alone without also needing the calendar.
+const RECEIVING_WITHIN_DAYS = [
+  { label:'Tomorrow', days:1 }, { label:'2 days', days:2 }, { label:'3 days', days:3 },
+  { label:'4 days', days:4 }, { label:'5 days', days:5 }, { label:'6 days', days:6 }, { label:'7 days', days:7 },
+];
+function dateFromToday(days){
+  const d = new Date(); d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0,10);
+}
+
+function openConfirmQuotationModal(defaultValue, defaultReceivingDate, onSubmit){
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
+  const withinDaysOptions = `<option value="">— within days —</option>` +
+    RECEIVING_WITHIN_DAYS.map(o => `<option value="${o.days}">${o.label}</option>`).join('');
   overlay.innerHTML = `<div class="modal">
     <h3>Confirm quotation</h3>
-    <p style="color:var(--text-dim);font-size:13px;margin:-6px 0 14px;">Enter the supplier's quotation number. Confirmed qty becomes editable once this is saved.</p>
+    <p style="color:var(--text-dim);font-size:13px;margin:-6px 0 14px;">Enter the supplier's quotation number and when the goods are expected to arrive. Confirmed qty becomes editable once this is saved.</p>
     <div class="field"><label>Quotation number</label><input type="text" id="quoteNumberInput" value="${(defaultValue||'').replace(/"/g,'&quot;')}" style="width:100%;"></div>
-    <span class="msg err" id="quoteNumberErr" style="display:none;padding:6px 0 0;">Enter a quotation number.</span>
+    <div class="field" style="margin-top:10px;"><label>Expected receiving date</label>
+      <div style="display:flex;gap:8px;">
+        <input type="date" id="quoteReceivingDateInput" value="${defaultReceivingDate||''}" style="flex:1;">
+        <select id="quoteReceivingWithinDays" style="flex:1;">${withinDaysOptions}</select>
+      </div>
+    </div>
+    <span class="msg err" id="quoteNumberErr" style="display:none;padding:6px 0 0;">Enter a quotation number and an expected receiving date.</span>
     <div class="form-foot" style="margin-top:10px;">
       <button class="btn primary" id="quoteNumberConfirm" style="flex:1;">Confirm quotation</button>
       <button class="btn" id="quoteNumberCancel">Cancel</button>
@@ -1914,17 +1943,23 @@ function openConfirmQuotationModal(defaultValue, onSubmit){
   </div>`;
   document.body.appendChild(overlay);
   const input = document.getElementById('quoteNumberInput');
+  const dateInput = document.getElementById('quoteReceivingDateInput');
+  const withinDaysSelect = document.getElementById('quoteReceivingWithinDays');
   const err = document.getElementById('quoteNumberErr');
   overlay.onclick = (e) => { if(e.target === overlay) overlay.remove(); };
   document.getElementById('quoteNumberCancel').onclick = () => overlay.remove();
+  withinDaysSelect.onchange = () => {
+    if(withinDaysSelect.value) dateInput.value = dateFromToday(Number(withinDaysSelect.value));
+  };
+  dateInput.onchange = () => { withinDaysSelect.value = ''; };
   const submit = () => {
     const value = input.value.trim();
-    if(!value){ err.style.display = ''; input.focus(); return; }
+    if(!value || !dateInput.value){ err.style.display = ''; (value ? dateInput : input).focus(); return; }
     overlay.remove();
-    onSubmit(value);
+    onSubmit(value, dateInput.value);
   };
   document.getElementById('quoteNumberConfirm').onclick = submit;
-  input.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); submit(); } };
+  [input, dateInput].forEach(inp => inp.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); submit(); } });
 }
 
 // Small popup asking for the invoice number and received date (both
@@ -2520,6 +2555,7 @@ function openEditPOModal(header, poNumber){
         <div class="field"><label>PO number</label><input type="text" name="newPoNumber" required value="${poNumber.replace(/"/g,'&quot;')}"></div>
         <div class="field"><label>Date</label><input type="date" name="poDate" required value="${header?header.PODate:''}"></div>
         <div class="field"><label>Quotation number</label><input type="text" name="quotationNumber" value="${((header&&header.QuotationNumber)||'').replace(/"/g,'&quot;')}"></div>
+        <div class="field"><label>Expected receiving date</label><input type="date" name="expectedReceivingDate" value="${(header&&header.ExpectedReceivingDate)||''}"></div>
         <div class="field"><label>Invoice number</label><input type="text" name="invoiceNumber" value="${((header&&header.InvoiceNumber)||'').replace(/"/g,'&quot;')}"></div>
         <div class="field"><label>Received date</label><input type="date" name="receivedDate" value="${(header&&header.ReceivedDate)||''}"></div>
         <div class="form-foot">
@@ -2554,6 +2590,9 @@ function openEditPOModal(header, poNumber){
       }
       if((f.quotationNumber||'').trim() !== ((header&&header.QuotationNumber)||'')){
         await apiPost('updatePOQuotationNumber', { poNumber: currentPoNumber, value: (f.quotationNumber||'').trim() });
+      }
+      if((f.expectedReceivingDate||'') !== ((header&&header.ExpectedReceivingDate)||'')){
+        await apiPost('updatePOExpectedReceivingDate', { poNumber: currentPoNumber, value: f.expectedReceivingDate || null });
       }
       if((f.invoiceNumber||'').trim() !== ((header&&header.InvoiceNumber)||'')){
         await apiPost('updatePOInvoiceNumber', { poNumber: currentPoNumber, value: (f.invoiceNumber||'').trim() });
@@ -2688,7 +2727,8 @@ async function renderPurchaseOrderDetail(){
         <label>Date</label><span>${header?header.PODate:''}</span>
         <label>Supplier</label><span>${header?header.Supplier:''}</span>
         <label>Status</label><span>${poStatusChip(status)}</span>
-        ${!isOpen && !isRFQ ? `<label>Quotation #</label><span>${(header&&header.QuotationNumber)||'—'}</span>` : ''}
+        ${!isOpen && !isRFQ ? `<label>Quotation #</label><span>${(header&&header.QuotationNumber)||'—'}</span>
+        <label>Expected receiving date</label><span>${(header&&header.ExpectedReceivingDate)||'—'}</span>` : ''}
         ${isReceived || isValidated ? `<label>Invoice #</label><span>${(header&&header.InvoiceNumber)||'—'}</span>
         <label>Received date</label><span>${(header&&header.ReceivedDate)||'—'}</span>` : ''}
         <button class="btn" id="editPOBtn" style="margin-left:auto;">Edit</button>
@@ -2721,10 +2761,11 @@ async function renderPurchaseOrderDetail(){
           // the button opens a small form asking for the one thing this
           // transition actually needs (here, the Quotation number) instead
           // of requiring it be entered ahead of time via Edit.
-          openConfirmQuotationModal(header && header.QuotationNumber, async (quotationNumber) => {
+          openConfirmQuotationModal(header && header.QuotationNumber, header && header.ExpectedReceivingDate, async (quotationNumber, expectedReceivingDate) => {
             btn.disabled = true;
             try{
               await apiPost('updatePOQuotationNumber', { poNumber, value: quotationNumber });
+              await apiPost('updatePOExpectedReceivingDate', { poNumber, value: expectedReceivingDate });
               // Confirming the quotation is the moment Confirmed qty stops
               // being editable per-line and starts being read everywhere
               // (warehouse receiving, totals) as "confirmed_qty or Qty

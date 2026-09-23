@@ -222,7 +222,7 @@ const FIELD_MAPS = {
     effective_qty:'EffectiveQty', so_status:'SOStatus' },
   purchaseOrder: { po_number:'PONumber', po_date:'PODate', supplier:'Supplier', expected_delivery:'ExpectedDelivery',
     status:'Status', quotation_number:'QuotationNumber', invoice_number:'InvoiceNumber', received_date:'ReceivedDate',
-    total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
+    expected_receiving_date:'ExpectedReceivingDate', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
     total_received_qty:'TotalReceivedQty' },
   purchaseOrderLine: { po_number:'PONumber', line_num:'LineNum', zsku:'zSKU', sku:'SKU', qty_ordered:'QtyOrdered',
     unit_cost:'UnitCost', line_total:'LineTotal', qty_received:'QtyReceived', confirmed_qty:'ConfirmedQty',
@@ -844,7 +844,16 @@ async function renderReceiptPicker(){
     // stage — that's the only stage Qty received is editable in the main
     // dashboard. Earlier stages (Open/RFQ) are still "waiting" on the office
     // side; later stages (Received/Validated/Cancelled) are already done.
-    const eligible = orders.filter(o => o.Status === 'Purchase Order');
+    // Sorted by Expected receiving date (soonest first, no-date last) —
+    // same nulls-last pattern renderPickingPicker() uses for Expected Ship
+    // Day — so the most urgent incoming deliveries surface at the top.
+    const eligible = orders.filter(o => o.Status === 'Purchase Order').slice().sort((a, b) => {
+      const da = a.ExpectedReceivingDate, db = b.ExpectedReceivingDate;
+      if(!da && !db) return 0;
+      if(!da) return 1;
+      if(!db) return -1;
+      return da < db ? -1 : da > db ? 1 : 0;
+    });
 
     setPanel(`
       <div class="scan-bar"><input type="text" id="receiptSearchInput" placeholder="Search by quotation number"></div>
@@ -852,9 +861,9 @@ async function renderReceiptPicker(){
     `);
 
     const renderCards = (list) => {
-      const cardsHtml = list.length ? list.slice().reverse().map(o => `
+      const cardsHtml = list.length ? list.map(o => `
         <div class="order-card" data-po="${o.PONumber}">
-          <div><div class="id">${o.QuotationNumber || o.PONumber}</div><div class="meta">${o.Supplier||''} · PO ${o.PONumber} · received ${fmt(o.TotalReceivedQty)}/${fmt(o.TotalConfirmedQty)}</div></div>
+          <div><div class="id">${o.QuotationNumber || o.PONumber}</div><div class="meta">${o.Supplier||''} · PO ${o.PONumber} · received ${fmt(o.TotalReceivedQty)}/${fmt(o.TotalConfirmedQty)}${o.ExpectedReceivingDate ? ` · expected ${o.ExpectedReceivingDate}` : ''}</div></div>
           <span class="chip amber">Pending</span>
         </div>`).join('') : '';
       const holder = document.getElementById('receiptCards');
