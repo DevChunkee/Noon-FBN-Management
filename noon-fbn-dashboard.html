@@ -1927,6 +1927,39 @@ function openConfirmQuotationModal(defaultValue, onSubmit){
   input.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); submit(); } };
 }
 
+// Small popup asking for the invoice number and received date (both
+// required) — same pattern as openConfirmQuotationModal, for "Received and
+// Validate".
+function openReceivedValidateModal(defaultInvoice, defaultDate, onSubmit){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal">
+    <h3>Received and Validate</h3>
+    <p style="color:var(--text-dim);font-size:13px;margin:-6px 0 14px;">Enter the invoice number and received date. This marks the PO Received and Validated in one step.</p>
+    <div class="field"><label>Invoice number</label><input type="text" id="rvInvoiceInput" value="${(defaultInvoice||'').replace(/"/g,'&quot;')}" style="width:100%;"></div>
+    <div class="field" style="margin-top:10px;"><label>Received date</label><input type="date" id="rvDateInput" value="${defaultDate||''}" style="width:100%;"></div>
+    <span class="msg err" id="rvErr" style="display:none;padding:6px 0 0;">Enter an invoice number and a received date.</span>
+    <div class="form-foot" style="margin-top:10px;">
+      <button class="btn primary" id="rvConfirm" style="flex:1;">Received and Validate</button>
+      <button class="btn" id="rvCancel">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const invoiceInput = document.getElementById('rvInvoiceInput');
+  const dateInput = document.getElementById('rvDateInput');
+  const err = document.getElementById('rvErr');
+  overlay.onclick = (e) => { if(e.target === overlay) overlay.remove(); };
+  document.getElementById('rvCancel').onclick = () => overlay.remove();
+  const submit = () => {
+    const invoice = invoiceInput.value.trim();
+    if(!invoice || !dateInput.value){ err.style.display = ''; (invoice ? dateInput : invoiceInput).focus(); return; }
+    overlay.remove();
+    onSubmit(invoice, dateInput.value);
+  };
+  document.getElementById('rvConfirm').onclick = submit;
+  [invoiceInput, dateInput].forEach(inp => inp.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); submit(); } });
+}
+
 // "Edit" on the Order summary panel — lets the office correct the header
 // fields directly (creation date, delivery location, scheduled delivery
 // date) without going through the status-workflow buttons. Doesn't touch
@@ -2631,7 +2664,7 @@ async function renderPurchaseOrderDetail(){
     }
     if(isPO){
       statusActions.push({ id:'receivedBtn', label:'Received', primary:true, to:'Received', confirmMsg:'Mark this PO as Received?' });
-      statusActions.push({ id:'receivedValidateBtn', label:'Received and Validate', primary:true, to:'Validated', confirmMsg:'Mark this PO as Received and Validated in one step?', requireField:'InvoiceNumber', requireMsg:'Enter an Invoice number (via Edit) before validating.' });
+      statusActions.push({ id:'receivedValidateBtn', label:'Received and Validate', primary:true, to:'Validated', receiveValidate:true });
       statusActions.push({ id:'backToRFQBtn', label:'Back to RFQ', primary:false, to:'RFQ', confirmMsg:'Move this PO back to RFQ?' });
     }
     if(isReceived){
@@ -2654,9 +2687,9 @@ async function renderPurchaseOrderDetail(){
         <label>PO number</label><span>${poNumber}</span>
         <label>Date</label><span>${header?header.PODate:''}</span>
         <label>Supplier</label><span>${header?header.Supplier:''}</span>
-        <label>Status</label><span>${status}</span>
-        ${!isOpen && !isRFQ ? `<label>Quotation #</label><span>${(header&&header.QuotationNumber)||'—'}</span>
-        <label>Invoice #</label><span>${(header&&header.InvoiceNumber)||'—'}</span>
+        <label>Status</label><span>${poStatusChip(status)}</span>
+        ${!isOpen && !isRFQ ? `<label>Quotation #</label><span>${(header&&header.QuotationNumber)||'—'}</span>` : ''}
+        ${isReceived || isValidated ? `<label>Invoice #</label><span>${(header&&header.InvoiceNumber)||'—'}</span>
         <label>Received date</label><span>${(header&&header.ReceivedDate)||'—'}</span>` : ''}
         <button class="btn" id="editPOBtn" style="margin-left:auto;">Edit</button>
       </div>
@@ -2712,6 +2745,35 @@ async function renderPurchaseOrderDetail(){
           });
           return;
         }
+        if(a.receiveValidate){
+          // Same pattern as Confirm Quotation / Confirm delivery: collect
+          // what this transition actually needs (Invoice number, Received
+          // date) right there instead of requiring it be entered ahead of
+          // time via Edit.
+          openReceivedValidateModal(header && header.InvoiceNumber, (header && header.ReceivedDate) || today(), async (invoiceNumber, receivedDate) => {
+            btn.disabled = true;
+            try{
+              // Same display-fallback issue as Confirmed qty: the Qty
+              // received column shows Confirmed qty as its default for any
+              // line still at qty_received = 0, but that default is
+              // display-only — it's never written unless the field was
+              // manually edited and Save changes clicked. Pressing Received
+              // and Validate is the moment this needs to actually land in
+              // qty_received.
+              for(const l of enrichedLines){
+                const delta = Number(l._receivedVal||0) - Number(l.QtyReceived||0);
+                if(delta !== 0){
+                  await apiPost('updateWarehouseReceipt', { poNumber, lineNum: l.LineNum, receivedQty: delta });
+                }
+              }
+              await apiPost('updatePOInvoiceNumber', { poNumber, value: invoiceNumber });
+              await apiPost('updatePOReceivedDate', { poNumber, value: receivedDate });
+              await apiPost('setPOStatus', { poNumber, status: a.to });
+              renderPurchaseOrderDetail();
+            }catch(e){ alert(e.message); btn.disabled = false; }
+          });
+          return;
+        }
         if(a.requireField){
           const val = header ? (header[a.requireField]||'').toString().trim() : '';
           if(!val){ alert(a.requireMsg); return; }
@@ -2719,18 +2781,18 @@ async function renderPurchaseOrderDetail(){
         if(!confirm(a.confirmMsg)) return;
         btn.disabled = true;
         try{
-          if(a.id === 'receivedBtn' || a.id === 'receivedValidateBtn'){
+          if(a.id === 'receivedBtn'){
             // Same display-fallback issue as Confirmed qty: the Qty received
             // column shows Confirmed qty as its default for any line that's
             // still at qty_received = 0 (l._receivedVal), but that default
             // is display-only — it's never written unless the field was
-            // manually edited and Save changes clicked. Pressing Received /
-            // Received and Validate is the moment this needs to actually
-            // land in qty_received, so write the delta between what's shown
-            // and what's actually stored for every such line now, via the
-            // same additive RPC the Save changes button and the warehouse
-            // app use (so the "PO Received" ledger entry / stock bump still
-            // fires correctly off the real qty_received change).
+            // manually edited and Save changes clicked. Pressing Received is
+            // the moment this needs to actually land in qty_received, so
+            // write the delta between what's shown and what's actually
+            // stored for every such line now, via the same additive RPC the
+            // Save changes button and the warehouse app use (so the "PO
+            // Received" ledger entry / stock bump still fires correctly off
+            // the real qty_received change).
             for(const l of enrichedLines){
               const delta = Number(l._receivedVal||0) - Number(l.QtyReceived||0);
               if(delta !== 0){
