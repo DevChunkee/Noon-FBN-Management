@@ -260,7 +260,8 @@ const FIELD_MAPS = {
     total_units_sent:'TotalUnitsSent', total_confirmed_qty:'TotalConfirmedQty', total_effective_qty:'TotalEffectiveQty',
     total_delivered_qty:'TotalDeliveredQty', status:'Status', raw_status:'RawStatus',
     delivery_location_id:'DeliveryLocationId', delivery_location_name:'DeliveryLocationName',
-    expected_delivery_date:'ExpectedDeliveryDate', expected_ship_day:'ExpectedShipDay' },
+    expected_delivery_date:'ExpectedDeliveryDate', expected_ship_day:'ExpectedShipDay',
+    pod_file_path:'PodFilePath', pod_file_name:'PodFileName', pod_attached_at:'PodAttachedAt', pod_attached_by:'PodAttachedBy' },
   salesOrderLine: { so_number:'SONumber', line_num:'LineNum', zsku:'zSKU', qty_sent:'QtySent',
     confirmed_qty:'ConfirmedQty', delivered_qty:'DeliveredQty', shortage_reason:'ShortageReason',
     effective_qty:'EffectiveQty', so_status:'SOStatus' },
@@ -326,6 +327,23 @@ async function apiPost(action, payload){
         ? 'The database doesn\'t allow the new SO status workflow yet — ask an admin to run migration 15_so_status_workflow.sql.'
         : error.message);
       result = { ok:true }; break;
+    }
+    // Uploads the POD document to the private 'pod-documents' Storage
+    // bucket and moves the order to "POD attached" — mirrors the
+    // dashboard's own attachPOD case (see its comments there).
+    case 'attachPOD': {
+      const path = `${payload.soNumber}/${Date.now()}-${payload.file.name}`;
+      const { error: upErr } = await client.storage.from('pod-documents').upload(path, payload.file);
+      if(upErr) throw new Error(upErr.message === 'Bucket not found'
+        ? 'The database doesn\'t have the pod-documents storage bucket yet — ask an admin to run migration 24_so_pod_attached.sql.'
+        : upErr.message);
+      const patch = { pod_file_path: path, pod_file_name: payload.file.name, pod_attached_at: new Date().toISOString(), pod_attached_by: payload.attachedBy || 'Warehouse' };
+      if(payload.status) patch.status = payload.status;
+      const { error } = await client.from('sales_orders').update(patch).eq('so_number', payload.soNumber);
+      if(error) throw new Error(error.code === '42703'
+        ? 'The database doesn\'t have POD columns yet — ask an admin to run migration 24_so_pod_attached.sql.'
+        : (error.code === '23514' ? 'The database doesn\'t allow the "POD attached" status yet — ask an admin to run migration 24_so_pod_attached.sql.' : error.message));
+      result = { ok:true, podPath: path }; break;
     }
     case 'updateWarehouseReceipt': {
       const { data, error } = await client.rpc('rpc_update_warehouse_receipt', { p_po_number: payload.poNumber, p_line_num: Number(payload.lineNum), p_received_qty: Number(payload.receivedQty) });
@@ -688,16 +706,61 @@ async function renderPickingPicker(){
 // in the dashboard, not here.
 async function renderInTransit(){
   state.view = 'intransit'; state.selectedSO = null; state.selectedPO = null; persistView();
-  $main.innerHTML = viewHead('In-transit', 'Dispatched Sales Orders awaiting Proof of Delivery (confirmed in the dashboard).') + panelShell();
+  $main.innerHTML = viewHead('In-transit', 'Dispatched Sales Orders — tap one to attach its Proof of Delivery.') + panelShell();
   try{
     const orders = await apiGet('salesOrder');
     const active = orders.filter(o => o.Status === 'In transit');
     const cardsHtml = active.length ? active.slice().reverse().map(o => `
-      <div class="order-card">
-        <div><div class="id">${o.SONumber}</div><div class="meta">Dispatched ${o.DispatchedDate||''} · ${fmt(o.TotalEffectiveQty)} unit(s)</div></div>
-        <span class="chip amber">In transit</span>
+      <div class="order-card" data-so="${o.SONumber}" style="display:block;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+          <div class="id">${o.SONumber}</div>
+          <span class="chip amber">In transit</span>
+        </div>
+        <div class="meta">Dispatched ${o.DispatchedDate||''} · ${fmt(o.TotalEffectiveQty)} unit(s)</div>
       </div>`).join('') : '';
     setPanel(cardsHtml || emptyState('Nothing in transit right now.'));
+    document.querySelectorAll('.order-card[data-so]').forEach(card => {
+      card.onclick = () => { state.selectedSO = card.dataset.so; renderAttachPOD(); };
+    });
+  }catch(e){ setPanel(errorState(e)); }
+}
+
+// Attaching the POD document (In transit -> POD attached) is optional on
+// the warehouse's side — the dashboard's own "Confirm POD" can still do the
+// whole thing (attach + Delivered qty) itself straight from In transit. This
+// screen only exists to let the warehouse get the document on file early.
+async function renderAttachPOD(){
+  state.view = 'intransit'; persistView();
+  const soNumber = state.selectedSO;
+  $main.innerHTML = `<a href="#" class="back" id="backAttachPOD">← Choose a different order</a>` +
+    viewHead(`Attach POD — ${soNumber}`, 'Upload the proof-of-delivery document for this dispatch.') + panelShell();
+  document.getElementById('backAttachPOD').onclick = (e) => { e.preventDefault(); state.selectedSO = null; renderInTransit(); };
+  try{
+    const orders = await apiGet('salesOrder', true);
+    const header = orders.find(o => o.SONumber === soNumber);
+    if(header && header.Status !== 'In transit'){
+      setPanel(emptyState(`This order is now "${header.Status}" — it's no longer waiting on a POD attach here.`));
+      return;
+    }
+    setPanel(`
+      <div style="padding:16px;">
+        <div class="meta" style="margin-bottom:12px;">Dispatched ${header?header.DispatchedDate||'':''} · ${fmt(header?header.TotalEffectiveQty:0)} unit(s)</div>
+        <button class="btn primary full" id="attachPODBtn">Attach POD</button>
+        <div class="msg" id="attachPODMsg" style="padding-top:10px;"></div>
+      </div>
+    `);
+    document.getElementById('attachPODBtn').onclick = () => {
+      openAttachPODModal(async (file) => {
+        const btn = document.getElementById('attachPODBtn');
+        const msg = document.getElementById('attachPODMsg');
+        btn.disabled = true; msg.className = 'msg'; msg.textContent = 'Uploading…';
+        try{
+          await apiPost('attachPOD', { soNumber, file, attachedBy:'Warehouse', status:'POD attached' });
+          msg.className = 'msg ok'; msg.textContent = 'POD attached.';
+          setTimeout(() => { state.selectedSO = null; renderInTransit(); }, 700);
+        }catch(e){ msg.className = 'msg err'; msg.textContent = e.message; btn.disabled = false; }
+      });
+    };
   }catch(e){ setPanel(errorState(e)); }
 }
 
@@ -946,6 +1009,44 @@ async function renderReceiptPicker(){
 // Small popup asking for the supplier invoice number before validating —
 // mirrors the main dashboard's "Invoice # required to Validate" rule, just
 // as a one-off wizard instead of an always-visible header field.
+// Opens a signed URL for a POD document stored in the private
+// 'pod-documents' Storage bucket.
+async function viewPODFile(path){
+  try{
+    const { data, error } = await ensureClient().storage.from('pod-documents').createSignedUrl(path, 3600);
+    if(error) throw new Error(error.message);
+    window.open(data.signedUrl, '_blank');
+  }catch(e){ alert('Could not open POD document: ' + e.message); }
+}
+
+// Small popup collecting the POD document itself, for the warehouse's own
+// "Attach POD" action — mirrors the dashboard's identical modal.
+function openAttachPODModal(onSubmit){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal">
+    <h3>Attach POD</h3>
+    <p style="color:var(--text-dim);font-size:13px;margin:-6px 0 14px;">Upload the proof-of-delivery document (photo or PDF).</p>
+    <div class="field"><label>POD document</label><input type="file" id="podFileInput" accept="image/*,application/pdf" style="width:100%;"></div>
+    <span class="msg err" id="podFileErr" style="display:none;padding:6px 0 0;">Choose a file to attach.</span>
+    <div class="form-foot" style="margin-top:10px;">
+      <button class="btn primary" id="podFileConfirm" style="flex:1;">Attach POD</button>
+      <button class="btn" id="podFileCancel">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const input = document.getElementById('podFileInput');
+  const err = document.getElementById('podFileErr');
+  overlay.onclick = (e) => { if(e.target === overlay) overlay.remove(); };
+  document.getElementById('podFileCancel').onclick = () => overlay.remove();
+  document.getElementById('podFileConfirm').onclick = () => {
+    const file = input.files && input.files[0];
+    if(!file){ err.style.display = ''; return; }
+    overlay.remove();
+    onSubmit(file);
+  };
+}
+
 function openInvoiceWizard(onSubmit){
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';

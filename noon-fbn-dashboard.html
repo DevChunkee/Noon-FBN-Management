@@ -12,7 +12,7 @@
   :root{
     --bg:#0F1115; --panel:#171A21; --panel-alt:#1D2129; --border:#272C36;
     --text:#E6E8EC; --text-dim:#8A93A3; --text-faint:#5A6270;
-    --amber:#E8A33D; --green:#4FB286; --blue:#5B8DEF; --red:#D9736E;
+    --amber:#E8A33D; --green:#4FB286; --blue:#5B8DEF; --red:#D9736E; --purple:#9B7EDE;
     --mono: 'IBM Plex Mono', ui-monospace, monospace;
     --sans: 'IBM Plex Sans', system-ui, sans-serif;
     color-scheme: dark; /* tells the browser to draw native pickers (date
@@ -78,6 +78,7 @@
   .chip.red{background:rgba(217,115,110,.15);color:var(--red);}
   .chip.blue{background:rgba(91,141,239,.15);color:var(--blue);}
   .chip.gray{background:rgba(138,147,163,.15);color:var(--text-dim);}
+  .chip.purple{background:rgba(155,126,222,.15);color:var(--purple);}
 
   .empty{padding:40px 20px;text-align:center;color:var(--text-dim);font-size:13px;}
   .loading{padding:40px 20px;text-align:center;color:var(--text-faint);font-size:13px;font-family:var(--mono);}
@@ -282,7 +283,8 @@ const FIELD_MAPS = {
     total_units_sent:'TotalUnitsSent', total_confirmed_qty:'TotalConfirmedQty', total_effective_qty:'TotalEffectiveQty',
     total_delivered_qty:'TotalDeliveredQty', status:'Status', raw_status:'RawStatus',
     delivery_location_id:'DeliveryLocationId', delivery_location_name:'DeliveryLocationName',
-    expected_delivery_date:'ExpectedDeliveryDate', expected_ship_day:'ExpectedShipDay' },
+    expected_delivery_date:'ExpectedDeliveryDate', expected_ship_day:'ExpectedShipDay',
+    pod_file_path:'PodFilePath', pod_file_name:'PodFileName', pod_attached_at:'PodAttachedAt', pod_attached_by:'PodAttachedBy' },
   salesOrderLine: { so_number:'SONumber', line_num:'LineNum', zsku:'zSKU', qty_sent:'QtySent',
     confirmed_qty:'ConfirmedQty', delivered_qty:'DeliveredQty', shortage_reason:'ShortageReason',
     effective_qty:'EffectiveQty', so_status:'SOStatus', selling_price:'SellingPrice', line_total:'LineTotal' },
@@ -478,6 +480,27 @@ async function apiPost(action, payload){
         ? 'The database doesn\'t allow the new SO status workflow yet — ask an admin to run migration 15_so_status_workflow.sql.'
         : error.message);
       result = { ok:true }; break;
+    }
+    // Uploads the POD document to the private 'pod-documents' Storage
+    // bucket (one file per SO, timestamped so re-attaching doesn't clobber
+    // an earlier upload) and records it on the order. payload.status is
+    // optional — the warehouse's Attach POD sets it to 'POD attached';
+    // the dashboard's Confirm POD (when nothing was attached yet) folds
+    // the upload into its own move straight to 'Delivered', so it leaves
+    // status out here and sets it separately alongside Delivered qty.
+    case 'attachPOD': {
+      const path = `${payload.soNumber}/${Date.now()}-${payload.file.name}`;
+      const { error: upErr } = await client.storage.from('pod-documents').upload(path, payload.file);
+      if(upErr) throw new Error(upErr.message === 'Bucket not found'
+        ? 'The database doesn\'t have the pod-documents storage bucket yet — ask an admin to run migration 24_so_pod_attached.sql.'
+        : upErr.message);
+      const patch = { pod_file_path: path, pod_file_name: payload.file.name, pod_attached_at: new Date().toISOString(), pod_attached_by: payload.attachedBy || 'Office' };
+      if(payload.status) patch.status = payload.status;
+      const { error } = await client.from('sales_orders').update(patch).eq('so_number', payload.soNumber);
+      if(error) throw new Error(error.code === '42703'
+        ? 'The database doesn\'t have POD columns yet — ask an admin to run migration 24_so_pod_attached.sql.'
+        : (error.code === '23514' ? 'The database doesn\'t allow the "POD attached" status yet — ask an admin to run migration 24_so_pod_attached.sql.' : error.message));
+      result = { ok:true, podPath: path }; break;
     }
     // "Confirm delivery" — office picks a delivery location and a scheduled
     // delivery date (both required) and the SO moves to Scheduled. Shipment
@@ -1779,7 +1802,7 @@ async function renderWeekly(){
 // shipment day has arrived, with no button click needed.
 function soStatusChip(status){
   const map = { Open:'gray', Pending:'amber', Confirmed:'blue', Scheduled:'blue', Delivery:'amber',
-    'In transit':'amber', Delivered:'green', Completed:'green', Cancelled:'red' };
+    'In transit':'amber', 'POD attached':'purple', Delivered:'green', Completed:'green', Cancelled:'red' };
   const cls = map[status] || 'gray';
   return `<span class="chip ${cls}">${status||''}</span>`;
 }
@@ -1867,6 +1890,47 @@ async function openCreateSOModal(){
 // becomes visible for picking in the warehouse app) is computed
 // automatically from the date minus the picked location's shipment_days,
 // so nothing else needs entering here.
+// Opens a signed URL for a POD document stored in the private
+// 'pod-documents' Storage bucket — same helper used by both the dashboard
+// and warehouse app wherever a POD link is shown.
+async function viewPODFile(path){
+  try{
+    const { data, error } = await ensureClient().storage.from('pod-documents').createSignedUrl(path, 3600);
+    if(error) throw new Error(error.message);
+    window.open(data.signedUrl, '_blank');
+  }catch(e){ alert('Could not open POD document: ' + e.message); }
+}
+
+// Small popup collecting the POD document itself — used by the dashboard's
+// "Confirm POD" when no POD is on file yet (office is doing both the
+// upload and the status move in one step), and by the warehouse's own
+// "Attach POD" action.
+function openAttachPODModal(onSubmit){
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal">
+    <h3>Attach POD</h3>
+    <p style="color:var(--text-dim);font-size:13px;margin:-6px 0 14px;">Upload the proof-of-delivery document (photo or PDF).</p>
+    <div class="field"><label>POD document</label><input type="file" id="podFileInput" accept="image/*,application/pdf" style="width:100%;"></div>
+    <span class="msg err" id="podFileErr" style="display:none;padding:6px 0 0;">Choose a file to attach.</span>
+    <div class="form-foot" style="margin-top:10px;">
+      <button class="btn primary" id="podFileConfirm" style="flex:1;">Attach POD</button>
+      <button class="btn" id="podFileCancel">Cancel</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  const input = document.getElementById('podFileInput');
+  const err = document.getElementById('podFileErr');
+  overlay.onclick = (e) => { if(e.target === overlay) overlay.remove(); };
+  document.getElementById('podFileCancel').onclick = () => overlay.remove();
+  document.getElementById('podFileConfirm').onclick = () => {
+    const file = input.files && input.files[0];
+    if(!file){ err.style.display = ''; return; }
+    overlay.remove();
+    onSubmit(file);
+  };
+}
+
 async function openScheduleDeliveryModal(defaultDate, defaultLocationId, onSubmit){
   let locations;
   try{ locations = activeDeliveryLocations(await ensureDeliveryLocations()); }
@@ -2066,6 +2130,13 @@ async function renderSalesOrderDetail(){
     const isScheduledRaw = rawStatus === 'Scheduled'; // covers both "waiting for shipment day" and "showing as Delivery"
     const isDelivery = status === 'Delivery';
     const isInTransit = status === 'In transit';
+    // Warehouse can attach the POD document itself (In transit -> POD
+    // attached) before the office ever touches this screen; Confirm POD
+    // then just needs Delivered qty. Or the office can do both — the POD
+    // upload AND Delivered qty — in one motion straight from In transit,
+    // never passing through this stage at all. Either path lands on
+    // Delivered.
+    const isPODAttached = status === 'POD attached';
     const isDelivered = status === 'Delivered';
     const isCompleted = status === 'Completed';
     const isCancelled = status === 'Cancelled';
@@ -2074,8 +2145,8 @@ async function renderSalesOrderDetail(){
     // just empty fields, so Expected delivery (the rough pre-scheduling
     // estimate) is what's shown instead. Once scheduled, the real date
     // supersedes the estimate, so the two swap rather than both showing.
-    const isScheduledOrLater = isScheduledRaw || isInTransit || isDelivered || isCompleted;
-    const deliveredEditableStage = isInTransit;
+    const isScheduledOrLater = isScheduledRaw || isInTransit || isPODAttached || isDelivered || isCompleted;
+    const deliveredEditableStage = isInTransit || isPODAttached;
     // Confirmed Qty (picking) is editable right on this screen while the
     // order is Pending — the exact same step as the warehouse's Picking
     // screen (same DB write, "updatePickingConfirmation"; whichever side
@@ -2095,7 +2166,7 @@ async function renderSalesOrderDetail(){
     // deliveredEditableStage turns on) — same "hide until relevant" idea as
     // the PO screen's showConfirmedCol/showReceivedCol.
     const showConfirmedCol = !isOpen;
-    const showDeliveredCol = isInTransit || isDelivered || isCompleted;
+    const showDeliveredCol = isInTransit || isPODAttached || isDelivered || isCompleted;
     const shortageReasons = ['Stock shortfall - need to investigate','Reserved for another order','Damaged in warehouse','Miscount / data entry error','Other'];
 
     const enrichedLines = myLines.map(l => {
@@ -2148,12 +2219,25 @@ async function renderSalesOrderDetail(){
     }
     if(isScheduledRaw) statusActions.push({ id:'backToConfirmedSOBtn', label:'Back to Confirmed', primary:false, to:'Confirmed', confirmMsg:'Move this Sales Order back to Confirmed? Its scheduled date stays on file if you confirm delivery again.' });
     if(isInTransit){
-      statusActions.push({ id:'confirmPODBtn', label:'Confirm POD', primary:true, to:'Delivered', pod:true, confirmMsg:'Confirm proof of delivery and mark this Sales Order Delivered?' });
+      // No POD on file yet — Confirm POD collects the document itself
+      // (required) alongside Delivered qty, and goes straight to Delivered
+      // in one step (skipping "POD attached" entirely).
+      statusActions.push({ id:'confirmPODBtn', label:'Confirm POD', primary:true, to:'Delivered', pod:true, podNeedsFile:true });
       statusActions.push({ id:'backToScheduledSOBtn', label:'Back to Delivery', primary:false, to:'Scheduled', confirmMsg:'Move this Sales Order back to Delivery? This undoes dispatch.' });
     }
+    if(isPODAttached){
+      // Warehouse already attached the document — Confirm POD here only
+      // needs Delivered qty.
+      statusActions.push({ id:'confirmPODBtn', label:'Confirm POD', primary:true, to:'Delivered', pod:true, confirmMsg:'Confirm proof of delivery and mark this Sales Order Delivered?' });
+      statusActions.push({ id:'backToInTransitPODSOBtn', label:'Back to In transit', primary:false, to:'In transit', confirmMsg:'Move this Sales Order back to In transit?' });
+    }
     if(isDelivered){
+      // Back up to wherever it actually came from: if a POD is already on
+      // file, that's "POD attached" (undoing this doesn't lose the
+      // document); otherwise it's plain "In transit".
+      const deliveredBackStatus = header && header.PodFilePath ? 'POD attached' : 'In transit';
       statusActions.push({ id:'completeSOBtn', label:'Complete', primary:true, to:'Completed', confirmMsg:'Mark this Sales Order as Completed? This is its final stage.' });
-      statusActions.push({ id:'backToInTransitSOBtn', label:'Back to In transit', primary:false, to:'In transit', confirmMsg:'Move this Sales Order back to In transit? This undoes proof of delivery.' });
+      statusActions.push({ id:'backToInTransitSOBtn', label:`Back to ${deliveredBackStatus}`, primary:false, to:deliveredBackStatus, confirmMsg:`Move this Sales Order back to ${deliveredBackStatus}? This undoes proof of delivery.` });
     }
     if(isCompleted) statusActions.push({ id:'backToDeliveredSOBtn', label:'Back to Delivered', primary:false, to:'Delivered', confirmMsg:'Move this Sales Order back to Delivered?' });
     const canCancel = !isCancelled && !isCompleted;
@@ -2169,6 +2253,9 @@ async function renderSalesOrderDetail(){
         <label>Delivery location</label><span>${header&&header.DeliveryLocationName?header.DeliveryLocationName:'—'}</span>
         ${!isOpen && isScheduledOrLater ? `<label>Scheduled delivery</label><span>${header&&header.ScheduledDate?header.ScheduledDate:'—'}</span>
         <label>Shipment day</label><span>${header&&header.ShipmentDay?header.ShipmentDay:'—'}</span>` : ''}
+        ${(isPODAttached || isDelivered || isCompleted) ? `<label>POD</label><span>${header&&header.PodFilePath
+          ? `<a href="#" id="viewPODLink">${header.PodFileName||'View document'}</a> <span style="color:var(--text-dim);font-size:11.5px;">(${header.PodAttachedBy||''}${header.PodAttachedAt?', '+new Date(header.PodAttachedAt).toLocaleString():''})</span>`
+          : '—'}</span>` : ''}
         <label>Status</label><span>${soStatusChip(status)}</span>
         <label>Expected sellable</label><span>${header?header.ExpectedSellableDate:''}</span>
         <button class="btn" id="editSOBtn" style="margin-left:auto;">Edit</button></div>
@@ -2181,6 +2268,8 @@ async function renderSalesOrderDetail(){
       catch(e){ alert('Could not cancel: ' + e.message); }
     };
     document.getElementById('editSOBtn').onclick = () => openEditSOModal(header);
+    const viewPODLink = document.getElementById('viewPODLink');
+    if(viewPODLink) viewPODLink.onclick = (e) => { e.preventDefault(); viewPODFile(header.PodFilePath); };
 
     statusActions.forEach(a => {
       const btn = document.getElementById(a.id);
@@ -2191,6 +2280,28 @@ async function renderSalesOrderDetail(){
             btn.disabled = true;
             try{ await apiPost('scheduleSODelivery', { soNumber, scheduledDate, deliveryLocationId }); renderSalesOrderDetail(); }
             catch(e){ alert(e.message); btn.disabled = false; }
+          });
+          return;
+        }
+        if(a.pod && a.podNeedsFile){
+          // No POD on file yet — collect the document itself, then fold
+          // straight into the same Delivered qty write + status move the
+          // plain a.pod path below does (see the a.pod block further down).
+          openAttachPODModal(async (file) => {
+            btn.disabled = true;
+            try{
+              await apiPost('attachPOD', { soNumber, file, attachedBy:'Office' });
+              for(const l of enrichedLines){
+                const row = document.querySelector(`tr[data-linenum="${l.LineNum}"]`);
+                const inp = row ? row.querySelector('.deliveredQtyInput') : null;
+                const shownVal = inp ? Number(inp.value||0) : l._deliveredVal;
+                if(!l._hasDelivered || Number(l.DeliveredQty) !== shownVal){
+                  await apiPost('updateSODeliveredQty', { soNumber, lineNum: l.LineNum, deliveredQty: shownVal });
+                }
+              }
+              await apiPost('setSOStatus', { soNumber, status: a.to });
+              renderSalesOrderDetail();
+            }catch(e){ alert(e.message); btn.disabled = false; }
           });
           return;
         }
