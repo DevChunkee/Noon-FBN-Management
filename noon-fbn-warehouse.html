@@ -497,20 +497,54 @@ async function renderOverview(){
 // review-and-Dispatch screen (no qty editing — that's already locked in).
 async function renderDelivery(){
   state.view = 'delivery'; persistView();
-  $main.innerHTML = viewHead('Delivery', 'Sales Orders ready to ship — their shipment day has arrived. Tap one to Dispatch.') + panelShell();
+  $main.innerHTML = viewHead('Delivery', 'Scheduled Sales Orders, grouped by shipment day. Tap one that\'s reached its shipment day to Dispatch.') + panelShell();
   try{
     const orders = await apiGet('salesOrder');
     const lines = await apiGet('salesOrderLine');
-    const ready = orders.filter(o => o.Status === 'Delivery').map(o => {
+    // Every order that's had "Confirm delivery" done (raw status stays
+    // 'Scheduled' even once the shipment day arrives and it displays as
+    // 'Delivery') — not just the ones ready to dispatch today, so the
+    // warehouse can see what's coming.
+    const scheduled = orders.filter(o => o.RawStatus === 'Scheduled').map(o => {
       const myLines = lines.filter(l => l.SONumber === o.SONumber);
       return Object.assign({}, o, { lineCount: myLines.length });
     });
-    const cardsHtml = ready.length ? ready.map(o => `
+
+    const todayStr = today();
+    const tmrw = new Date(); tmrw.setDate(tmrw.getDate() + 1);
+    const tomorrowStr = tmrw.toISOString().slice(0,10);
+
+    // Today's bucket also catches anything overdue (shipment day already
+    // passed but somehow not yet dispatched) — those need attention first,
+    // not to be buried under "Scheduled".
+    const todayList = [], tomorrowList = [], scheduledList = [];
+    scheduled.forEach(o => {
+      const d = o.ShipmentDay;
+      if(d && d <= todayStr) todayList.push(o);
+      else if(d === tomorrowStr) tomorrowList.push(o);
+      else scheduledList.push(o);
+    });
+    const byShipmentDay = (a, b) => {
+      const da = a.ShipmentDay, db = b.ShipmentDay;
+      if(!da && !db) return 0;
+      if(!da) return 1;
+      if(!db) return -1;
+      return da < db ? -1 : da > db ? 1 : 0;
+    };
+    [todayList, tomorrowList, scheduledList].forEach(list => list.sort(byShipmentDay));
+
+    const cardHtml = (o) => `
       <div class="order-card" data-so="${o.SONumber}">
-        <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipDate||''} · ${o.lineCount} line(s)</div></div>
-        <span class="chip amber">Ready to dispatch</span>
-      </div>`).join('') : '';
-    setPanel(cardsHtml || emptyState('Nothing ready to ship right now — Scheduled orders show up here once their shipment day arrives.'));
+        <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipmentDay ? 'ship '+o.ShipmentDay+' · ' : ''}${o.ShipDate||''} · ${o.lineCount} line(s)</div></div>
+        <span class="chip ${o.Status==='Delivery'?'amber':'green'}">${o.Status==='Delivery'?'Ready to dispatch':'Scheduled'}</span>
+      </div>`;
+    const section = (label, list) => `
+      <div class="panel-head"><h3>${label} (${list.length})</h3></div>
+      ${list.length ? list.map(cardHtml).join('') : emptyState(`Nothing in ${label.toLowerCase()}.`)}`;
+
+    setPanel(scheduled.length
+      ? section('Today', todayList) + section('Tomorrow', tomorrowList) + section('Scheduled', scheduledList)
+      : emptyState('Nothing scheduled right now — orders show up here once "Confirm delivery" is done.'));
     document.querySelectorAll('.order-card[data-so]').forEach(card => {
       card.onclick = () => { state.selectedSO = card.dataset.so; renderDispatch(); };
     });
