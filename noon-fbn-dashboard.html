@@ -2623,7 +2623,7 @@ async function renderPurchaseOrderDetail(){
         <label>Date</label><span>${header?header.PODate:''}</span>
         <label>Supplier</label><span>${header?header.Supplier:''}</span>
         <label>Status</label><span>${status}</span>
-        ${!isOpen ? `<label>Quotation #</label><span>${(header&&header.QuotationNumber)||'—'}</span>
+        ${!isOpen && !isRFQ ? `<label>Quotation #</label><span>${(header&&header.QuotationNumber)||'—'}</span>
         <label>Invoice #</label><span>${(header&&header.InvoiceNumber)||'—'}</span>
         <label>Received date</label><span>${(header&&header.ReceivedDate)||'—'}</span>` : ''}
         <button class="btn" id="editPOBtn" style="margin-left:auto;">Edit</button>
