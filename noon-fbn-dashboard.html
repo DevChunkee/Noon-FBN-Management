@@ -500,7 +500,32 @@ async function apiPost(action, payload){
       if(error) throw new Error(error.code === '42703'
         ? 'The database doesn\'t have POD columns yet — ask an admin to run migration 24_so_pod_attached.sql.'
         : (error.code === '23514' ? 'The database doesn\'t allow the "POD attached" status yet — ask an admin to run migration 24_so_pod_attached.sql.' : error.message));
+      // Replacing an existing POD — clean up the old file so it doesn't sit
+      // around unreferenced. Best-effort: a failure here doesn't undo the
+      // (already-successful) replace, so it's swallowed rather than thrown.
+      if(payload.previousPath){
+        try{ await client.storage.from('pod-documents').remove([payload.previousPath]); }catch(e){ /* ignore */ }
+      }
       result = { ok:true, podPath: path }; break;
+    }
+    // Removes the POD document entirely (Edit Sales Order's "Delete") —
+    // clears the DB fields and best-effort deletes the stored file. If the
+    // order is sitting in the "POD attached" status (which only exists
+    // because a document was on file), dropping the document also drops
+    // the order back to "In transit" so the status stays honest; any later
+    // stage (Delivered/Completed) keeps its status — POD attached is a
+    // transient waypoint, not something those stages depend on.
+    case 'deletePOD': {
+      const { data: existing, error: getErr } = await client.from('sales_orders').select('pod_file_path, status').eq('so_number', payload.soNumber).single();
+      if(getErr) throw new Error(getErr.message);
+      if(existing && existing.pod_file_path){
+        try{ await client.storage.from('pod-documents').remove([existing.pod_file_path]); }catch(e){ /* ignore */ }
+      }
+      const patch = { pod_file_path: null, pod_file_name: null, pod_attached_at: null, pod_attached_by: null };
+      if(existing && existing.status === 'POD attached') patch.status = 'In transit';
+      const { error } = await client.from('sales_orders').update(patch).eq('so_number', payload.soNumber);
+      if(error) throw new Error(error.message);
+      result = { ok:true }; break;
     }
     // "Confirm delivery" — office picks a delivery location and a scheduled
     // delivery date (both required) and the SO moves to Scheduled. Shipment
@@ -2063,10 +2088,31 @@ function openReceivedValidateModal(defaultInvoice, defaultDate, onSubmit){
 // fields directly (creation date, delivery location, scheduled delivery
 // date) without going through the status-workflow buttons. Doesn't touch
 // status itself; use the workflow buttons / Cancel order for that.
+// The POD field of the Edit Sales Order form — its own little section
+// (View/Replace/Delete or Attach), re-rendered in place after each action
+// rather than closing the whole modal, so the rest of the form's unsaved
+// edits aren't lost along the way.
+function editSOPodSectionHtml(h){
+  return h && h.PodFilePath ? `
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <a href="#" id="editSOPodViewLink">${(h.PodFileName||'View document').replace(/</g,'&lt;')}</a>
+      <button class="btn" type="button" id="editSOPodReplaceBtn">Replace</button>
+      <button class="btn" type="button" id="editSOPodDeleteBtn" style="color:var(--red);border-color:var(--red);">Delete</button>
+    </div>` : `
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span style="color:var(--text-dim);font-size:13px;">No POD attached.</span>
+      <button class="btn" type="button" id="editSOPodReplaceBtn">Attach</button>
+    </div>`;
+}
+
 async function openEditSOModal(header){
   let locations;
   try{ locations = activeDeliveryLocations(await ensureDeliveryLocations()); }
   catch(e){ alert('Could not load delivery locations: ' + e.message); return; }
+  // Local mutable copy of the POD fields only — updated after Attach/
+  // Replace/Delete so the section re-renders with the new state without
+  // needing a full page refresh (or losing the rest of the form).
+  const pod = { PodFilePath: header&&header.PodFilePath, PodFileName: header&&header.PodFileName };
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'editSOOverlay';
@@ -2081,6 +2127,10 @@ async function openEditSOModal(header){
         <div class="field"><label>Expected delivery date</label><input type="date" name="expectedDeliveryDate" value="${header&&header.ExpectedDeliveryDate?header.ExpectedDeliveryDate:''}"></div>
         <div class="field"><label>Delivery location</label><select name="deliveryLocationId">${optionsHtml}</select></div>
         <div class="field"><label>Delivery date</label><input type="date" name="scheduledDate" value="${header&&header.ScheduledDate?header.ScheduledDate:''}"></div>
+        <div class="field"><label>POD document</label><div id="editSOPodSection">${editSOPodSectionHtml(pod)}</div>
+          <input type="file" id="editSOPodFileInput" accept="image/*,application/pdf" style="display:none;">
+          <span class="msg" id="editSOPodMsg" style="display:block;padding-top:6px;"></span>
+        </div>
         <div class="form-foot">
           <button class="btn primary" type="submit">Save</button>
           <button class="btn" type="button" id="editSOCancelBtn">Cancel</button>
@@ -2095,6 +2145,42 @@ async function openEditSOModal(header){
   editForm.addEventListener('keydown', (e) => {
     if(e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') e.preventDefault();
   });
+
+  const podFileInput = document.getElementById('editSOPodFileInput');
+  const podMsg = document.getElementById('editSOPodMsg');
+  const wirePodSection = () => {
+    const link = document.getElementById('editSOPodViewLink');
+    if(link) link.onclick = (e) => { e.preventDefault(); viewPODFile(pod.PodFilePath); };
+    document.getElementById('editSOPodReplaceBtn').onclick = () => podFileInput.click();
+    const delBtn = document.getElementById('editSOPodDeleteBtn');
+    if(delBtn) delBtn.onclick = async () => {
+      if(!confirm('Delete the attached POD document? This can\'t be undone.')) return;
+      podMsg.className = 'msg'; podMsg.textContent = 'Deleting…';
+      try{
+        await apiPost('deletePOD', { soNumber: header.SONumber });
+        pod.PodFilePath = null; pod.PodFileName = null;
+        document.getElementById('editSOPodSection').innerHTML = editSOPodSectionHtml(pod);
+        podMsg.className = 'msg ok'; podMsg.textContent = 'Deleted.';
+        wirePodSection();
+      }catch(e){ podMsg.className = 'msg err'; podMsg.textContent = e.message; }
+    };
+  };
+  wirePodSection();
+  podFileInput.onchange = async () => {
+    const file = podFileInput.files && podFileInput.files[0];
+    if(!file) return;
+    podMsg.className = 'msg'; podMsg.textContent = 'Uploading…';
+    try{
+      const r = await apiPost('attachPOD', { soNumber: header.SONumber, file, attachedBy:'Office', previousPath: pod.PodFilePath || undefined });
+      pod.PodFilePath = r.podPath;
+      pod.PodFileName = file.name;
+      document.getElementById('editSOPodSection').innerHTML = editSOPodSectionHtml(pod);
+      podMsg.className = 'msg ok'; podMsg.textContent = 'Saved.';
+      wirePodSection();
+    }catch(e){ podMsg.className = 'msg err'; podMsg.textContent = e.message; }
+    podFileInput.value = '';
+  };
+
   editForm.onsubmit = async (ev) => {
     ev.preventDefault();
     const f = Object.fromEntries(new FormData(ev.target));
