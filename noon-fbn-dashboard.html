@@ -1966,12 +1966,12 @@ async function renderSalesOrderDetail(){
     // advances the order to Confirmed, same as the warehouse's own
     // "Confirm Picking" button.
     const confirmedEditableStage = isPending;
-    // Same idea as the PO screen's structLocked: once the order has actually
-    // shipped, its line structure (add/delete items) is locked — deleting a
-    // line the warehouse already picked, dispatched, or delivered would
-    // desync the shipment from what's on the SO. Editable up through
-    // Confirmed/Scheduled/Delivery (nothing's left the building yet).
-    const structLocked = isInTransit || isDelivered || isCompleted;
+    // Delete only makes sense while the order is still a draft — once
+    // Confirm has moved it past Open, deleting a line would desync it from
+    // whatever the warehouse/office already started acting on. Add items
+    // is now Open-only too (see the isOpen return below), so together
+    // there's simply no line-structure editing once the order leaves Open.
+    const structLocked = !isOpen;
     // Confirmed qty column only means anything once picking can happen
     // (Pending onward); Delivered qty only means anything once it's
     // actually being entered/exists (In transit onward, same stage
@@ -2543,7 +2543,12 @@ async function renderPurchaseOrderDetail(){
     const isReceived = !isCancelled && status === 'Received';
     const isValidated = !isCancelled && status === 'Validated';
     const canCancel = isOpen || isRFQ || isPO; // matches the DB guard: blocked once anything's received
-    const structLocked = isCancelled || isReceived || isValidated; // no add/delete line items past this point
+    const structLocked = isCancelled || isReceived || isValidated; // no adding new line items past this point
+    // Delete only makes sense while the PO is still a draft — narrower than
+    // structLocked (which still allows adding items through RFQ/Purchase
+    // Order), since deleting a line the supplier's already quoted on or
+    // shipped against would desync the PO from what they were told.
+    const canDeleteLine = isOpen;
     const qtyEditableStage = isOpen;           // Qty ordered only editable in the Open (draft) stage
     const confirmedEditableStage = isRFQ;      // Confirmed qty only editable in the RFQ stage
     const qtyReceivedEditableStage = isPO;     // Qty received only editable in the Purchase Order stage
@@ -2580,7 +2585,7 @@ async function renderPurchaseOrderDetail(){
         <td class="num">${fmt(l.UnitCost)}</td><td class="num">${fmt(l.LineTotal)}</td>
         ${showConfirmedCol ? `<td class="num">${confirmedCell}</td>` : ''}
         ${showReceivedCol ? `<td class="num">${receivedCell}</td>` : ''}
-        <td>${structLocked ? '' : `<button type="button" class="btn deleteLineBtn" data-linenum="${l.LineNum}" style="color:var(--red);" title="Delete this line">✕</button>`}</td>
+        <td>${canDeleteLine ? `<button type="button" class="btn deleteLineBtn" data-linenum="${l.LineNum}" style="color:var(--red);" title="Delete this line">✕</button>` : ''}</td>
       </tr>`;
     }).join('');
 
