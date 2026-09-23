@@ -530,14 +530,19 @@ async function renderOverview(){
     const inTransitCount = soOrders.filter(o => o.Status === 'In transit').length;
     const pendingReceipts = poOrders.filter(o => o.Status === 'Purchase Order').length;
 
-    // Picking urgency, bucketed the same way as Receipt/Delivery — by each
-    // order's Expected Ship Day against today/tomorrow. Each bucket that
-    // has anything in it gets its own colored "Needs attention" badge, so
-    // the worst-case urgency is visible at a glance without opening Picking.
+    // Picking urgency, bucketed to match the same badges shown on each
+    // Picking card: Overdue and Today both read as most urgent (red),
+    // Tomorrow is next (orange), the day after that is still close
+    // (yellow), and anything further out is the low-urgency default (blue).
+    // Each bucket that has anything in it gets its own colored "Needs
+    // attention" badge, so the worst-case urgency is visible at a glance
+    // without opening Picking.
+    const nextDayStr = daysFromToday(2);
     const pickOverdueCount = pendingPickOrders.filter(o => o.ExpectedShipDay && o.ExpectedShipDay < todayStr).length;
     const pickTodayCount = pendingPickOrders.filter(o => o.ExpectedShipDay === todayStr).length;
     const pickTomorrowCount = pendingPickOrders.filter(o => o.ExpectedShipDay === tomorrowStr).length;
-    const pickLaterCount = pendingPickOrders.filter(o => o.ExpectedShipDay && o.ExpectedShipDay > tomorrowStr).length;
+    const pickNextDayCount = pendingPickOrders.filter(o => o.ExpectedShipDay === nextDayStr).length;
+    const pickLaterCount = pendingPickOrders.filter(o => o.ExpectedShipDay && o.ExpectedShipDay > nextDayStr).length;
 
     const html = `
       <div class="order-card" id="overviewPicking">
@@ -545,8 +550,9 @@ async function renderOverview(){
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
           ${!pendingPicks ? `<span class="chip green">All clear</span>` : ''}
           ${pickOverdueCount ? `<span class="chip red" title="${pickOverdueCount} overdue">Needs attention</span>` : ''}
-          ${pickTodayCount ? `<span class="chip orange" title="${pickTodayCount} due today">Needs attention</span>` : ''}
-          ${pickTomorrowCount ? `<span class="chip yellow" title="${pickTomorrowCount} due tomorrow">Needs attention</span>` : ''}
+          ${pickTodayCount ? `<span class="chip red" title="${pickTodayCount} due today">Needs attention</span>` : ''}
+          ${pickTomorrowCount ? `<span class="chip orange" title="${pickTomorrowCount} due tomorrow">Needs attention</span>` : ''}
+          ${pickNextDayCount ? `<span class="chip yellow" title="${pickNextDayCount} due the day after">Needs attention</span>` : ''}
           ${pickLaterCount ? `<span class="chip blue" title="${pickLaterCount} due later">Needs attention</span>` : ''}
         </div>
       </div>
