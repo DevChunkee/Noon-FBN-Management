@@ -138,6 +138,7 @@ function fmt(n){ if(n===null||n===undefined||n==='') return '—'; if(typeof n!=
   return Math.round(n*100)/100 === Math.round(n) ? Math.round(n).toLocaleString() : n.toFixed(2); }
 function today(){ return new Date().toISOString().slice(0,10); }
 function tomorrow(){ const d = new Date(); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); }
+function daysFromToday(n){ const d = new Date(); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
 // Human-friendly label for a YYYY-MM-DD date relative to today — used
 // wherever a date is more useful as "Overdue"/"Today"/"Tomorrow" than as a
 // raw date, e.g. the Receipt picker's Expected receiving date.
@@ -156,6 +157,16 @@ function shipmentDayLabel(dateStr){
   if(dateStr === today()) return 'Expected Shipment is Today';
   if(dateStr === tomorrow()) return 'Expected Shipment is tomorrow';
   return 'Expected shipment on ' + dateStr;
+}
+// Urgency badge for a Picking card — Overdue/Today both read as most urgent
+// (red), Tomorrow is next (orange), the day after that is still close
+// (yellow), and anything further out (or no date on file yet) is the
+// low-urgency default (blue).
+function pickingUrgencyBadge(dateStr){
+  if(dateStr && dateStr <= today()) return { cls:'red', label: dateStr < today() ? 'Overdue' : 'Today' };
+  if(dateStr === tomorrow()) return { cls:'orange', label:'Tomorrow' };
+  if(dateStr === daysFromToday(2)) return { cls:'yellow', label:'Next day' };
+  return { cls:'blue', label: dateStr ? 'Upcoming' : 'Unscheduled' };
 }
 
 // ---------------- Supabase connection + auth ----------------
@@ -654,10 +665,14 @@ async function renderPickingPicker(){
       if(!db) return -1;
       return da < db ? -1 : da > db ? 1 : 0;
     });
-    const cardsHtml = active.length ? active.map(o => `
+    const cardsHtml = active.length ? active.map(o => {
+      const badge = pickingUrgencyBadge(o.ExpectedShipDay);
+      return `
       <div class="order-card" data-so="${o.SONumber}">
         <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipDate||''} · ${o.Status||''}${o.ExpectedShipDay ? ' · ' + shipmentDayLabel(o.ExpectedShipDay) : ''}</div></div>
-      </div>`).join('') : '';
+        <span class="chip ${badge.cls}">${badge.label}</span>
+      </div>`;
+    }).join('') : '';
     setPanel(cardsHtml || emptyState('Nothing ready to pick right now.'));
     document.querySelectorAll('.order-card[data-so]').forEach(card => {
       card.onclick = () => { state.selectedSO = card.dataset.so; renderPicking(); };
