@@ -72,8 +72,13 @@
   input, select{background:var(--bg);border:1px solid var(--border);color:var(--text);
     border-radius:6px;padding:10px 12px;font-size:15px;font-family:var(--sans);min-height:44px;}
   input:focus, select:focus{outline:none;border-color:var(--blue);}
-  input[type=number]{width:100px;}
+  input[type=number]{width:100px;text-align:center;}
   .shortage-select{flex:1;min-width:180px;}
+  .qtyStepBtn{width:44px;flex:none;padding:0;font-size:19px;font-weight:600;line-height:1;}
+  .confirmLineBtn{margin-left:auto;}
+  .qtyMsg{width:100%;font-family:var(--mono);font-size:12px;padding-top:2px;min-height:15px;}
+  .qtyMsg.warn{color:var(--amber);}
+  .qtyMsg.bad{color:var(--red);}
 
   .scan-bar{display:flex;gap:8px;padding:14px 16px;background:var(--panel-alt);border-bottom:1px solid var(--border);}
   .scan-bar input{flex:1;font-family:var(--mono);}
@@ -589,19 +594,20 @@ async function renderPicking(){
     const rowsHtml = lines.map(l => {
       const c = catalog.find(x => x.zSKU === l.zSKU) || {};
       return `
-      <div class="line-row" data-zsku="${l.zSKU}" data-linenum="${l.LineNum}">
+      <div class="line-row" data-zsku="${l.zSKU}" data-linenum="${l.LineNum}" data-expected="${l.QtySent}">
         <div class="line-top">
           <div><div class="line-sku">${c.SKU||''}</div><div class="line-name">${c.ItemName||''}</div></div>
           <div class="line-planned">plan: ${fmt(l.QtySent)}</div>
         </div>
         <div class="line-fields">
-          <button class="btn qtyMinusBtn" type="button" style="width:36px;flex:none;">−</button>
+          <button class="btn qtyStepBtn qtyMinusBtn" type="button">−</button>
           <input type="number" class="confirmInput" min="0" value="${l.QtySent}">
-          <button class="btn qtyPlusBtn" type="button" style="width:36px;flex:none;">+</button>
-          <button class="btn confirmLineBtn" type="button">Confirm</button>
-          <select class="shortage-select reasonSelect" style="display:${l.ConfirmedQty && l.ConfirmedQty < l.QtySent ? '' : 'none'};">
+          <button class="btn qtyStepBtn qtyPlusBtn" type="button">+</button>
+          <select class="shortage-select reasonSelect" style="display:none;">
             ${reasons.map(r => `<option ${l.ShortageReason===r?'selected':''}>${r}</option>`).join('')}
           </select>
+          <button class="btn confirmLineBtn" type="button">Confirm</button>
+          <div class="qtyMsg"></div>
         </div>
       </div>`;
     }).join('');
@@ -621,15 +627,20 @@ async function renderPicking(){
 
     document.querySelectorAll('.line-row').forEach(row => {
       const inp = row.querySelector('.confirmInput');
-      const l = lines.find(x => String(x.LineNum) === row.dataset.linenum) || {};
-      const planned = Number(l.QtySent||0);
-      const syncReason = () => {
-        const sel = row.querySelector('.reasonSelect');
-        sel.style.display = Number(inp.value) < planned ? '' : 'none';
+      const sel = row.querySelector('.reasonSelect');
+      const msgEl = row.querySelector('.qtyMsg');
+      const planned = Number(row.dataset.expected||0);
+      const sync = () => {
+        const v = Number(inp.value||0);
+        sel.style.display = v < planned ? '' : 'none';
+        if(v < planned){ msgEl.className = 'qtyMsg warn'; msgEl.textContent = `${fmt(planned - v)} short of plan qty (${fmt(planned)})`; }
+        else if(v > planned){ msgEl.className = 'qtyMsg bad'; msgEl.textContent = `${fmt(v - planned)} over plan qty (${fmt(planned)})`; }
+        else { msgEl.className = 'qtyMsg'; msgEl.textContent = ''; }
       };
-      inp.oninput = syncReason;
-      row.querySelector('.qtyMinusBtn').onclick = () => { inp.value = Math.max(0, Number(inp.value||0) - 1); syncReason(); };
-      row.querySelector('.qtyPlusBtn').onclick = () => { inp.value = Number(inp.value||0) + 1; syncReason(); };
+      inp.oninput = sync;
+      row.querySelector('.qtyMinusBtn').onclick = () => { inp.value = Math.max(0, Number(inp.value||0) - 1); sync(); };
+      row.querySelector('.qtyPlusBtn').onclick = () => { inp.value = Number(inp.value||0) + 1; sync(); };
+      sync();
     });
 
     // "Confirm" beside each item's qty input, same as the Receipt screen:
@@ -856,15 +867,18 @@ async function renderReceipt(){
       const hasConfirmedQty = l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined;
       const confirmedQty = hasConfirmedQty ? Number(l.ConfirmedQty) : Number(l.QtyOrdered||0);
       return `
-      <div class="line-row" data-zsku="${l.zSKU}" data-linenum="${l.LineNum}" data-confirmed-total="0">
+      <div class="line-row" data-zsku="${l.zSKU}" data-linenum="${l.LineNum}" data-confirmed-total="0" data-expected="${confirmedQty}">
         <div class="line-top">
           <div><div class="line-sku">${l.SKU}</div></div>
           <div class="line-planned">confirmed: ${fmt(confirmedQty)} · received so far: ${fmt(l.QtyReceived)}</div>
         </div>
         <div class="line-fields">
           <span class="bankedQty" style="display:none;color:var(--text-dim);font-size:14px;"></span>
+          <button class="btn qtyStepBtn qtyMinusBtn" type="button">−</button>
           <input type="number" class="receiveInput" min="0" value="${confirmedQty}" placeholder="Qty now">
+          <button class="btn qtyStepBtn qtyPlusBtn" type="button">+</button>
           <button class="btn confirmLineBtn" type="button">Confirm</button>
+          <div class="qtyMsg"></div>
         </div>
       </div>`;
     }).join('');
@@ -903,6 +917,25 @@ async function renderReceipt(){
       if(banked > 0){ label.textContent = `${fmt(banked)} +`; label.style.display = ''; }
       else { label.style.display = 'none'; }
     };
+    // Compares the running total (banked + whatever's currently in the qty
+    // input) against the line's expected/confirmed qty — amber if short,
+    // red if over, matching the same pattern used on Picking.
+    const updateQtyMsg = (row) => {
+      const inp = row.querySelector('.receiveInput');
+      const msgEl = row.querySelector('.qtyMsg');
+      const expected = Number(row.dataset.expected || 0);
+      const total = Number(row.dataset.confirmedTotal || 0) + Number(inp.value || 0);
+      if(total < expected){ msgEl.className = 'qtyMsg warn'; msgEl.textContent = `${fmt(expected - total)} short of confirmed qty (${fmt(expected)})`; }
+      else if(total > expected){ msgEl.className = 'qtyMsg bad'; msgEl.textContent = `${fmt(total - expected)} over confirmed qty (${fmt(expected)})`; }
+      else { msgEl.className = 'qtyMsg'; msgEl.textContent = ''; }
+    };
+    document.querySelectorAll('.line-row').forEach(row => {
+      const inp = row.querySelector('.receiveInput');
+      inp.oninput = () => updateQtyMsg(row);
+      row.querySelector('.qtyMinusBtn').onclick = () => { inp.value = Math.max(0, Number(inp.value||0) - 1); updateQtyMsg(row); };
+      row.querySelector('.qtyPlusBtn').onclick = () => { inp.value = Number(inp.value||0) + 1; updateQtyMsg(row); };
+      updateQtyMsg(row);
+    });
     document.querySelectorAll('.confirmLineBtn').forEach(btn => {
       btn.onclick = () => {
         const row = btn.closest('.line-row');
@@ -911,6 +944,7 @@ async function renderReceipt(){
         row.dataset.confirmedTotal = banked;
         inp.value = '0';
         updateBankedLabel(row);
+        updateQtyMsg(row);
         row.classList.add('confirmed-hidden');
         row.style.display = 'none';
         updateConfirmProgress();
@@ -937,6 +971,7 @@ async function renderReceipt(){
       if(wasHidden) inp.value = '0';
       inp.focus(); inp.select();
       scanInput.value = '';
+      updateQtyMsg(row);
       updateConfirmProgress();
     };
     scanInput.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); handleScan(scanInput.value.trim()); } };
