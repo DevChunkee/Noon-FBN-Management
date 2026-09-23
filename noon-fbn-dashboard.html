@@ -519,19 +519,6 @@ async function apiPost(action, payload){
         : error.message);
       result = { ok:true, newSoNumber: currentSoNumber }; break;
     }
-    case 'updateSODeliveryFields': {
-      // Lightweight partial update for the SO detail screen's inline
-      // Delivery location / Scheduled delivery fields (shown only while
-      // Confirmed and still empty) — touches only whichever of the two was
-      // actually sent, unlike updateSalesOrder which rewrites the whole
-      // header and requires every field.
-      const patch = {};
-      if(payload.scheduledDate !== undefined) patch.scheduled_date = payload.scheduledDate || null;
-      if(payload.deliveryLocationId !== undefined) patch.delivery_location_id = payload.deliveryLocationId ? Number(payload.deliveryLocationId) : null;
-      if(!Object.keys(patch).length) throw new Error('Nothing to save.');
-      const { error } = await client.from('sales_orders').update(patch).eq('so_number', payload.soNumber);
-      if(error) throw new Error(error.message); result = { ok:true }; break;
-    }
     case 'addDeliveryLocation': {
       const { error } = await client.from('delivery_locations').insert({
         location_name: payload.locationName, location_address: payload.locationAddress || null,
@@ -2012,20 +1999,6 @@ async function renderSalesOrderDetail(){
         <td>${structLocked ? '' : `<button type="button" class="btn deleteLineBtn" data-linenum="${l.LineNum}" style="color:var(--red);" title="Delete this line">✕</button>`}</td></tr>`;
     }).join('');
 
-    // While Confirmed, "Delivery location"/"Scheduled delivery" on the
-    // summary row become live input fields whenever they're still empty —
-    // a shortcut so the office can fill them in right there instead of
-    // opening Edit or Confirm delivery. Once a value is on file, each one
-    // goes back to being the plain read-only text the summary row normally
-    // shows for every other field.
-    const needsLocationInline = isConfirmed && !(header && header.DeliveryLocationName);
-    const needsScheduledInline = isConfirmed && !(header && header.ScheduledDate);
-    let confirmDeliveryLocations = [];
-    if(needsLocationInline){
-      try{ confirmDeliveryLocations = activeDeliveryLocations(await ensureDeliveryLocations()); }
-      catch(e){ /* inline picker just won't have options — Edit/Confirm delivery still work */ }
-    }
-
     const totalPlannedQty = enrichedLines.reduce((s,l) => s + Number(l.QtySent||0), 0);
     const totalPlannedValue = enrichedLines.reduce((s,l) => s + Number(l.LineTotal||0), 0);
     const totalConfirmedQty = enrichedLines.reduce((s,l) => s + Number(l._confirmedVal||0), 0);
@@ -2053,13 +2026,8 @@ async function renderSalesOrderDetail(){
         </div></div>
       <div class="batch-bar" style="flex-wrap:wrap;"><label>Creation date</label><span>${header?header.ShipDate:''}</span>
         <label>Expected delivery</label><span>${header&&header.ExpectedDeliveryDate?header.ExpectedDeliveryDate:'—'}</span>
-        <label>Delivery location</label>${needsLocationInline
-          ? `<select id="inlineDeliveryLocationInput" style="min-width:150px;"><option value="">Select…</option>${confirmDeliveryLocations.map(l => `<option value="${l.Id}">${l.LocationName}</option>`).join('')}</select>`
-          : `<span>${header&&header.DeliveryLocationName?header.DeliveryLocationName:'—'}</span>`}
-        <label>Scheduled delivery</label>${needsScheduledInline
-          ? `<input type="date" id="inlineScheduledDateInput" style="width:150px;">`
-          : `<span>${header&&header.ScheduledDate?header.ScheduledDate:'—'}</span>`}
-        ${(needsLocationInline || needsScheduledInline) ? `<button class="btn" id="saveInlineDeliveryBtn" style="padding:8px 12px;font-size:12.5px;">Save</button>` : ''}
+        <label>Delivery location</label><span>${header&&header.DeliveryLocationName?header.DeliveryLocationName:'—'}</span>
+        <label>Scheduled delivery</label><span>${header&&header.ScheduledDate?header.ScheduledDate:'—'}</span>
         <label>Shipment day</label><span>${header&&header.ShipmentDay?header.ShipmentDay:'—'}</span>
         <label>Status</label><span>${soStatusChip(status)}</span>
         <label>Expected sellable</label><span>${header?header.ExpectedSellableDate:''}</span>
@@ -2073,17 +2041,6 @@ async function renderSalesOrderDetail(){
       catch(e){ alert('Could not cancel: ' + e.message); }
     };
     document.getElementById('editSOBtn').onclick = () => openEditSOModal(header);
-    const saveInlineDeliveryBtn = document.getElementById('saveInlineDeliveryBtn');
-    if(saveInlineDeliveryBtn) saveInlineDeliveryBtn.onclick = async () => {
-      const locInput = document.getElementById('inlineDeliveryLocationInput');
-      const dateInput = document.getElementById('inlineScheduledDateInput');
-      const payload = { soNumber };
-      if(locInput) payload.deliveryLocationId = locInput.value;
-      if(dateInput) payload.scheduledDate = dateInput.value;
-      saveInlineDeliveryBtn.disabled = true;
-      try{ await apiPost('updateSODeliveryFields', payload); renderSalesOrderDetail(); }
-      catch(e){ alert(e.message); saveInlineDeliveryBtn.disabled = false; }
-    };
 
     statusActions.forEach(a => {
       const btn = document.getElementById(a.id);
