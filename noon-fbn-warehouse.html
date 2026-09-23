@@ -668,9 +668,12 @@ async function renderPickingPicker(){
     const cardsHtml = active.length ? active.map(o => {
       const badge = pickingUrgencyBadge(o.ExpectedShipDay);
       return `
-      <div class="order-card" data-so="${o.SONumber}">
-        <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipDate||''} · ${o.Status||''}${o.ExpectedShipDay ? ' · ' + shipmentDayLabel(o.ExpectedShipDay) : ''}</div></div>
-        <span class="chip ${badge.cls}">${badge.label}</span>
+      <div class="order-card" data-so="${o.SONumber}" style="display:block;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+          <div class="id">${o.SONumber}</div>
+          <span class="chip ${badge.cls}">${badge.label}</span>
+        </div>
+        <div class="meta">${o.ShipDate||''} · ${o.Status||''}${o.ExpectedShipDay ? ' · ' + shipmentDayLabel(o.ExpectedShipDay) : ''}</div>
       </div>`;
     }).join('') : '';
     setPanel(cardsHtml || emptyState('Nothing ready to pick right now.'));
