@@ -2012,10 +2012,20 @@ async function renderSalesOrderDetail(){
       statusActions.push({ id:'confirmPendingBtn', label:'Confirm', primary:true, to:'Confirmed', pick:true, confirmMsg:'Confirm picking and move this Sales Order to Confirmed?' });
       statusActions.push({ id:'backToOpenSOBtn', label:'Back to Open', primary:false, to:'Open', confirmMsg:'Move this Sales Order back to Open?' });
     }
-    if(isConfirmed) statusActions.push({ id:'confirmDeliveryBtn', label:'Confirm delivery', primary:true, schedule:true });
+    if(isConfirmed){
+      statusActions.push({ id:'confirmDeliveryBtn', label:'Confirm delivery', primary:true, schedule:true });
+      statusActions.push({ id:'backToPendingSOBtn', label:'Back to Pending', primary:false, to:'Pending', confirmMsg:'Move this Sales Order back to Pending? Confirmed qty becomes editable again.' });
+    }
     if(isScheduledRaw) statusActions.push({ id:'backToConfirmedSOBtn', label:'Back to Confirmed', primary:false, to:'Confirmed', confirmMsg:'Move this Sales Order back to Confirmed? Its scheduled date stays on file if you confirm delivery again.' });
-    if(isInTransit) statusActions.push({ id:'confirmPODBtn', label:'Confirm POD', primary:true, to:'Delivered', pod:true, confirmMsg:'Confirm proof of delivery and mark this Sales Order Delivered?' });
-    if(isDelivered) statusActions.push({ id:'completeSOBtn', label:'Complete', primary:true, to:'Completed', confirmMsg:'Mark this Sales Order as Completed? This is its final stage.' });
+    if(isInTransit){
+      statusActions.push({ id:'confirmPODBtn', label:'Confirm POD', primary:true, to:'Delivered', pod:true, confirmMsg:'Confirm proof of delivery and mark this Sales Order Delivered?' });
+      statusActions.push({ id:'backToScheduledSOBtn', label:'Back to Delivery', primary:false, to:'Scheduled', confirmMsg:'Move this Sales Order back to Delivery? This undoes dispatch.' });
+    }
+    if(isDelivered){
+      statusActions.push({ id:'completeSOBtn', label:'Complete', primary:true, to:'Completed', confirmMsg:'Mark this Sales Order as Completed? This is its final stage.' });
+      statusActions.push({ id:'backToInTransitSOBtn', label:'Back to In transit', primary:false, to:'In transit', confirmMsg:'Move this Sales Order back to In transit? This undoes proof of delivery.' });
+    }
+    if(isCompleted) statusActions.push({ id:'backToDeliveredSOBtn', label:'Back to Delivered', primary:false, to:'Delivered', confirmMsg:'Move this Sales Order back to Delivered?' });
     const canCancel = !isCancelled && !isCompleted;
 
     setPanel(`
