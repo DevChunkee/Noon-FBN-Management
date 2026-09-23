@@ -595,7 +595,9 @@ async function renderPicking(){
           <div class="line-planned">plan: ${fmt(l.QtySent)}</div>
         </div>
         <div class="line-fields">
-          <input type="number" class="confirmInput" min="0" value="${l.ConfirmedQty!==''&&l.ConfirmedQty!==undefined?l.ConfirmedQty:l.QtySent}">
+          <button class="btn qtyMinusBtn" type="button" style="width:36px;flex:none;">−</button>
+          <input type="number" class="confirmInput" min="0" value="${l.QtySent}">
+          <button class="btn qtyPlusBtn" type="button" style="width:36px;flex:none;">+</button>
           <button class="btn confirmLineBtn" type="button">Confirm</button>
           <select class="shortage-select reasonSelect" style="display:${l.ConfirmedQty && l.ConfirmedQty < l.QtySent ? '' : 'none'};">
             ${reasons.map(r => `<option ${l.ShortageReason===r?'selected':''}>${r}</option>`).join('')}
@@ -617,13 +619,17 @@ async function renderPicking(){
       </div>
     `);
 
-    document.querySelectorAll('.confirmInput').forEach((inp, i) => {
-      const row = inp.closest('.line-row');
-      const planned = Number(lines[i].QtySent);
-      inp.oninput = () => {
+    document.querySelectorAll('.line-row').forEach(row => {
+      const inp = row.querySelector('.confirmInput');
+      const l = lines.find(x => String(x.LineNum) === row.dataset.linenum) || {};
+      const planned = Number(l.QtySent||0);
+      const syncReason = () => {
         const sel = row.querySelector('.reasonSelect');
         sel.style.display = Number(inp.value) < planned ? '' : 'none';
       };
+      inp.oninput = syncReason;
+      row.querySelector('.qtyMinusBtn').onclick = () => { inp.value = Math.max(0, Number(inp.value||0) - 1); syncReason(); };
+      row.querySelector('.qtyPlusBtn').onclick = () => { inp.value = Number(inp.value||0) + 1; syncReason(); };
     });
 
     // "Confirm" beside each item's qty input, same as the Receipt screen:
