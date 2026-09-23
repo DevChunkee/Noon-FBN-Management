@@ -2534,11 +2534,10 @@ async function renderPurchaseOrderDetail(){
     const isReceived = !isCancelled && status === 'Received';
     const isValidated = !isCancelled && status === 'Validated';
     const canCancel = isOpen || isRFQ || isPO; // matches the DB guard: blocked once anything's received
-    const structLocked = isCancelled || isReceived || isValidated; // no adding new line items past this point
-    // Delete only makes sense while the PO is still a draft — narrower than
-    // structLocked (which still allows adding items through RFQ/Purchase
-    // Order), since deleting a line the supplier's already quoted on or
-    // shipped against would desync the PO from what they were told.
+    // Add/delete line items — and the Quotation #/Invoice #/Received date
+    // fields, which mean nothing until later stages actually set them — are
+    // all Open-only now: once Confirm Order has moved the PO on, its line
+    // structure is locked in and edited only through the line table itself.
     const canDeleteLine = isOpen;
     const qtyEditableStage = isOpen;           // Qty ordered only editable in the Open (draft) stage
     const confirmedEditableStage = isRFQ;      // Confirmed qty only editable in the RFQ stage
@@ -2624,9 +2623,9 @@ async function renderPurchaseOrderDetail(){
         <label>Date</label><span>${header?header.PODate:''}</span>
         <label>Supplier</label><span>${header?header.Supplier:''}</span>
         <label>Status</label><span>${status}</span>
-        <label>Quotation #</label><span>${(header&&header.QuotationNumber)||'—'}</span>
+        ${!isOpen ? `<label>Quotation #</label><span>${(header&&header.QuotationNumber)||'—'}</span>
         <label>Invoice #</label><span>${(header&&header.InvoiceNumber)||'—'}</span>
-        <label>Received date</label><span>${(header&&header.ReceivedDate)||'—'}</span>
+        <label>Received date</label><span>${(header&&header.ReceivedDate)||'—'}</span>` : ''}
         <button class="btn" id="editPOBtn" style="margin-left:auto;">Edit</button>
       </div>
     `);
@@ -2783,7 +2782,7 @@ async function renderPurchaseOrderDetail(){
       };
     });
 
-    if(structLocked){ return; }
+    if(!isOpen){ return; } // "Add items" only applies to a draft (Open) order — once Confirm Order has moved it on, items are locked in and edited via the line table itself
 
     // Item pool for the dropdown: prefer items already tagged with this PO's
     // supplier, so the suggestions are actually relevant; fall back to the
