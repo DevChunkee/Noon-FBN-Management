@@ -12,7 +12,7 @@
   :root{
     --bg:#0F1115; --panel:#171A21; --panel-alt:#1D2129; --border:#272C36;
     --text:#E6E8EC; --text-dim:#8A93A3; --text-faint:#5A6270;
-    --amber:#E8A33D; --green:#4FB286; --blue:#5B8DEF; --red:#D9736E;
+    --amber:#E8A33D; --green:#4FB286; --blue:#5B8DEF; --red:#D9736E; --orange:#E88A3D; --yellow:#E0C93D;
     --mono: 'IBM Plex Mono', ui-monospace, monospace;
     --sans: 'IBM Plex Sans', system-ui, sans-serif;
   }
@@ -61,6 +61,8 @@
   .chip.green{background:rgba(79,178,134,.15);color:var(--green);}
   .chip.red{background:rgba(217,115,110,.15);color:var(--red);}
   .chip.blue{background:rgba(91,141,239,.15);color:var(--blue);}
+  .chip.orange{background:rgba(232,138,61,.15);color:var(--orange);}
+  .chip.yellow{background:rgba(224,201,61,.18);color:var(--yellow);}
 
   .line-row{padding:14px 16px;border-bottom:1px solid var(--border);}
   .line-row:last-child{border-bottom:none;}
@@ -145,6 +147,15 @@ function relativeDateLabel(dateStr){
   if(dateStr === today()) return 'Today';
   if(dateStr === tomorrow()) return 'Tomorrow';
   return dateStr;
+}
+// Same idea as relativeDateLabel, but phrased as a full sentence fragment
+// for the Picking picker's card meta line.
+function shipmentDayLabel(dateStr){
+  if(!dateStr) return '';
+  if(dateStr < today()) return 'Expected Shipment Overdue';
+  if(dateStr === today()) return 'Expected Shipment is Today';
+  if(dateStr === tomorrow()) return 'Expected Shipment is tomorrow';
+  return 'Expected shipment on ' + dateStr;
 }
 
 // ---------------- Supabase connection + auth ----------------
@@ -492,7 +503,8 @@ async function renderOverview(){
     const [soOrders, poOrders] = await Promise.all([apiGet('salesOrder'), apiGet('purchaseOrder')]);
     // Picking now happens as soon as an order is confirmed to "Pending" by
     // the office (not waiting for its shipment day).
-    const pendingPicks = soOrders.filter(o => o.Status === 'Pending').length;
+    const pendingPickOrders = soOrders.filter(o => o.Status === 'Pending');
+    const pendingPicks = pendingPickOrders.length;
     // "Delivery" mirrors the Delivery screen's own Overdue/Today/Tomorrow
     // split — every Scheduled order (raw status; covers both the
     // not-yet-due "Scheduled" display and the due-today "Delivery" display)
@@ -507,10 +519,25 @@ async function renderOverview(){
     const inTransitCount = soOrders.filter(o => o.Status === 'In transit').length;
     const pendingReceipts = poOrders.filter(o => o.Status === 'Purchase Order').length;
 
+    // Picking urgency, bucketed the same way as Receipt/Delivery — by each
+    // order's Expected Ship Day against today/tomorrow. Each bucket that
+    // has anything in it gets its own colored "Needs attention" badge, so
+    // the worst-case urgency is visible at a glance without opening Picking.
+    const pickOverdueCount = pendingPickOrders.filter(o => o.ExpectedShipDay && o.ExpectedShipDay < todayStr).length;
+    const pickTodayCount = pendingPickOrders.filter(o => o.ExpectedShipDay === todayStr).length;
+    const pickTomorrowCount = pendingPickOrders.filter(o => o.ExpectedShipDay === tomorrowStr).length;
+    const pickLaterCount = pendingPickOrders.filter(o => o.ExpectedShipDay && o.ExpectedShipDay > tomorrowStr).length;
+
     const html = `
       <div class="order-card" id="overviewPicking">
         <div><div class="id">Picking</div><div class="meta">${pendingPicks} Sales Order(s) need picking</div></div>
-        <span class="chip ${pendingPicks ? 'amber' : 'green'}">${pendingPicks ? 'Needs attention' : 'All clear'}</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+          ${!pendingPicks ? `<span class="chip green">All clear</span>` : ''}
+          ${pickOverdueCount ? `<span class="chip red" title="${pickOverdueCount} overdue">Needs attention</span>` : ''}
+          ${pickTodayCount ? `<span class="chip orange" title="${pickTodayCount} due today">Needs attention</span>` : ''}
+          ${pickTomorrowCount ? `<span class="chip yellow" title="${pickTomorrowCount} due tomorrow">Needs attention</span>` : ''}
+          ${pickLaterCount ? `<span class="chip blue" title="${pickLaterCount} due later">Needs attention</span>` : ''}
+        </div>
       </div>
       <div class="order-card" id="overviewDelivery">
         <div><div class="id">Delivery</div><div class="meta">${scheduledOrders.length} Sales Order(s) scheduled</div></div>
@@ -629,7 +656,7 @@ async function renderPickingPicker(){
     });
     const cardsHtml = active.length ? active.map(o => `
       <div class="order-card" data-so="${o.SONumber}">
-        <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipDate||''} · ${o.Status||''}${o.ExpectedShipDay ? ' · ship by ' + o.ExpectedShipDay : ''}</div></div>
+        <div><div class="id">${o.SONumber}</div><div class="meta">${o.ShipDate||''} · ${o.Status||''}${o.ExpectedShipDay ? ' · ' + shipmentDayLabel(o.ExpectedShipDay) : ''}</div></div>
       </div>`).join('') : '';
     setPanel(cardsHtml || emptyState('Nothing ready to pick right now.'));
     document.querySelectorAll('.order-card[data-so]').forEach(card => {
