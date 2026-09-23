@@ -479,9 +479,10 @@ async function renderOverview(){
       <div class="order-card" id="overviewDelivery">
         <div><div class="id">Delivery</div><div class="meta">${scheduledOrders.length} Sales Order(s) scheduled</div></div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+          ${!overdueCount && !todayCount ? `<span class="chip green">All clear</span>` : ''}
           ${overdueCount ? `<span class="chip red">Overdue ${overdueCount}</span>` : ''}
-          <span class="chip ${todayCount ? 'amber' : 'green'}">Today ${todayCount}</span>
-          <span class="chip ${tomorrowCount ? 'blue' : 'green'}">Tomorrow ${tomorrowCount}</span>
+          ${todayCount ? `<span class="chip amber">Today ${todayCount}</span>` : ''}
+          ${tomorrowCount ? `<span class="chip blue">Tomorrow ${tomorrowCount}</span>` : ''}
         </div>
       </div>
       <div class="order-card" id="overviewInTransit">
