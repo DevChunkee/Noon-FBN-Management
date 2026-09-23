@@ -479,6 +479,7 @@ async function apiPost(action, payload){
     // order with no location on file).
     case 'scheduleSODelivery': {
       if(!payload.deliveryLocationId) throw new Error('Pick a delivery location before confirming delivery.');
+      if(!payload.scheduledDate) throw new Error('Pick a scheduled delivery date before confirming delivery.');
       const { error } = await client.from('sales_orders')
         .update({ status: 'Scheduled', scheduled_date: payload.scheduledDate, delivery_location_id: Number(payload.deliveryLocationId) })
         .eq('so_number', payload.soNumber);
@@ -2182,7 +2183,7 @@ async function renderSalesOrderDetail(){
       };
     });
 
-    if(isCancelled){ return; } // no further edits on a cancelled order
+    if(!isOpen){ return; } // "Add items" only applies to a draft (Open) order — once Confirm has moved it on, items are locked in and edited via the line table itself
 
     const itemOptionsHtml = catalog.map(c => `<option value="${c.SKU}" label="${(c.ItemName||'').replace(/"/g,'&quot;')}">`).join('');
 
