@@ -1831,35 +1831,77 @@ function soStatusChip(status){
   const cls = map[status] || 'gray';
   return `<span class="chip ${cls}">${status||''}</span>`;
 }
+// Every display status a Sales Order can show (Scheduled/Delivery are both
+// the same raw 'Scheduled' status — see v_sales_orders — just shown as
+// whichever the row's actually reading right now).
+const SO_STATUSES = ['Open','Pending','Confirmed','Scheduled','Delivery','In transit','POD attached','Delivered','Completed','Cancelled'];
+
 async function renderSalesOrders(){
   state.view = 'salesorders'; state.selectedSO = null; persistView();
   $main.innerHTML = viewHead('Sales Orders', 'Shipments sent to Noon FBN. Click one to view or add its items.') + panelShell('loading');
   try{
     const rows = await apiGet('salesOrder');
-    const body = rows.length ? rows.slice().reverse().map(r => `
-      <tr class="clickRow" data-so="${r.SONumber}">
-        <td class="sku">${r.SONumber}</td>
-        <td>${r.ShipDate||''}</td>
-        <td>${r.ScheduledDate||'—'}</td>
-        <td class="num">${fmt(r.TotalUnitsSent)}</td>
-        <td class="num">${fmt(r.TotalConfirmedQty)}</td>
-        <td class="num">${fmt(r.TotalDeliveredQty)}</td>
-        <td>${soStatusChip(r.Status)}</td>
-      </tr>`).join('') : '';
+    // Newest Creation date first. A plain reverse() (insertion/fetch order)
+    // isn't reliably the same thing once rows get edited, so this sorts on
+    // the actual ShipDate.
+    const sorted = rows.slice().sort((a, b) => (b.ShipDate||'').localeCompare(a.ShipDate||''));
+    const statusOptionsHtml = `<option value="">All statuses</option>` + SO_STATUSES.map(s => `<option value="${s.replace(/"/g,'&quot;')}">${s}</option>`).join('');
+
+    const renderRows = (list) => {
+      const body = list.length ? list.map(r => `
+        <tr class="clickRow" data-so="${r.SONumber}">
+          <td class="sku">${r.SONumber}</td>
+          <td>${r.ShipDate||''}</td>
+          <td>${r.ScheduledDate||'—'}</td>
+          <td class="num">${fmt(r.TotalUnitsSent)}</td>
+          <td class="num">${fmt(r.TotalConfirmedQty)}</td>
+          <td class="num">${fmt(r.TotalDeliveredQty)}</td>
+          <td>${soStatusChip(r.Status)}</td>
+        </tr>`).join('') : `<tr><td colspan="7">${emptyState('No sales orders match this filter.')}</td></tr>`;
+      const tbody = document.getElementById('soListBody');
+      if(tbody) tbody.innerHTML = body;
+      document.querySelectorAll('tr.clickRow[data-so]').forEach(tr => {
+        tr.style.cursor = 'pointer';
+        tr.onclick = () => { state.selectedSO = tr.dataset.so; renderSalesOrderDetail(); };
+      });
+    };
+
     setPanel(`
       <div class="panel-head"><h3>${rows.length} order${rows.length===1?'':'s'}</h3>
         <div style="display:flex;gap:8px;">
           <button class="btn primary" id="newSOBtn">Create new Sales Order</button>
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div></div>
-      ${rows.length ? `<table>
+      ${rows.length ? `
+      <div class="panel-head" style="flex-wrap:wrap;gap:10px;">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="text" id="soSearchInput" placeholder="Search SO number…" style="width:200px;">
+          <select id="soStatusFilter">${statusOptionsHtml}</select>
+        </div>
+      </div>
+      <table>
         <thead><tr><th>SO</th><th>Creation date</th><th>Scheduled</th><th class="num">Planned</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Status</th></tr></thead>
-        <tbody>${body}</tbody></table>` : emptyState('No sales orders yet — click "Create new Sales Order" above.')}
+        <tbody id="soListBody"></tbody></table>` : emptyState('No sales orders yet — click "Create new Sales Order" above.')}
     `);
-    document.querySelectorAll('tr.clickRow[data-so]').forEach(tr => {
-      tr.style.cursor = 'pointer';
-      tr.onclick = () => { state.selectedSO = tr.dataset.so; renderSalesOrderDetail(); };
-    });
+
+    if(rows.length){
+      const searchInput = document.getElementById('soSearchInput');
+      const statusFilter = document.getElementById('soStatusFilter');
+      const applyFilter = () => {
+        const q = searchInput.value.trim().toLowerCase();
+        const statusVal = statusFilter.value;
+        // No status picked: everything except Cancelled (hidden by
+        // default). Picking "Cancelled" explicitly is the only way to see
+        // cancelled orders; picking any other status filters to just that.
+        let list = statusVal ? sorted.filter(r => r.Status === statusVal) : sorted.filter(r => r.Status !== 'Cancelled');
+        if(q) list = list.filter(r => (r.SONumber||'').toLowerCase().includes(q));
+        renderRows(list);
+      };
+      searchInput.oninput = applyFilter;
+      statusFilter.onchange = applyFilter;
+      applyFilter();
+    }
+
     document.getElementById('newSOBtn').onclick = openCreateSOModal;
   }catch(e){ setPanel(errorState(e)); }
 }
@@ -2627,31 +2669,71 @@ function openSOImportModal(soNumber, header, catalog){
   };
 }
 
+const PO_STATUSES = ['Open','RFQ','Purchase Order','Received','Validated','Cancelled'];
+
 async function renderPurchaseOrders(){
   state.view = 'purchaseorders'; state.selectedPO = null; persistView();
   $main.innerHTML = viewHead('Purchase Orders', 'Orders placed with your suppliers to restock Internal WH. Click one to view or add its items.') + panelShell('loading');
   try{
     const rows = await apiGet('purchaseOrder');
-    const body = rows.length ? rows.slice().reverse().map(r => `
-      <tr class="clickRow" data-po="${r.PONumber}">
-        <td class="sku">${r.PONumber}</td><td>${r.QuotationNumber||'—'}</td><td>${r.InvoiceNumber||'—'}</td>
-        <td>${r.PODate||''}</td><td>${r.ReceivedDate||'—'}</td><td>${r.Supplier||''}</td>
-        <td class="num">${fmt(r.TotalUnits)}</td><td class="num">${fmt(r.TotalCost)}</td><td>${poStatusChip(r.Status)}</td>
-      </tr>`).join('') : '';
+    // Newest Creation date first — same reasoning as the Sales Orders list.
+    const sorted = rows.slice().sort((a, b) => (b.PODate||'').localeCompare(a.PODate||''));
+    const statusOptionsHtml = `<option value="">All statuses</option>` + PO_STATUSES.map(s => `<option value="${s.replace(/"/g,'&quot;')}">${s}</option>`).join('');
+
+    const renderRows = (list) => {
+      const body = list.length ? list.map(r => `
+        <tr class="clickRow" data-po="${r.PONumber}">
+          <td class="sku">${r.PONumber}</td><td>${r.QuotationNumber||'—'}</td><td>${r.InvoiceNumber||'—'}</td>
+          <td>${r.PODate||''}</td><td>${r.ReceivedDate||'—'}</td><td>${r.Supplier||''}</td>
+          <td class="num">${fmt(r.TotalUnits)}</td><td class="num">${fmt(r.TotalCost)}</td><td>${poStatusChip(r.Status)}</td>
+        </tr>`).join('') : `<tr><td colspan="9">${emptyState('No purchase orders match this filter.')}</td></tr>`;
+      const tbody = document.getElementById('poListBody');
+      if(tbody) tbody.innerHTML = body;
+      document.querySelectorAll('tr.clickRow[data-po]').forEach(tr => {
+        tr.style.cursor = 'pointer';
+        tr.onclick = () => { state.selectedPO = tr.dataset.po; renderPurchaseOrderDetail(); };
+      });
+    };
+
     setPanel(`
       <div class="panel-head"><h3>${rows.length} order${rows.length===1?'':'s'}</h3>
         <div style="display:flex;gap:8px;">
           <button class="btn primary" id="newPOBtn">Create new Purchase Order</button>
           <button class="btn" onclick="refreshAll()">Refresh</button>
         </div></div>
-      ${rows.length ? `<table>
-        <thead><tr><th>PO</th><th>Quotation #</th><th>Invoice #</th><th>Date</th><th>Received date</th><th>Supplier</th><th class="num">Units</th><th class="num">Cost</th><th>Status</th></tr></thead>
-        <tbody>${body}</tbody></table>` : emptyState('No purchase orders yet — click "Create new Purchase Order" above.')}
+      ${rows.length ? `
+      <div class="panel-head" style="flex-wrap:wrap;gap:10px;">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="text" id="poSearchInput" placeholder="Search PO / Quotation / Invoice #…" style="width:240px;">
+          <select id="poStatusFilter">${statusOptionsHtml}</select>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>PO</th><th>Quotation #</th><th>Invoice #</th><th>Creation date</th><th>Received date</th><th>Supplier</th><th class="num">Units</th><th class="num">Cost</th><th>Status</th></tr></thead>
+        <tbody id="poListBody"></tbody></table>` : emptyState('No purchase orders yet — click "Create new Purchase Order" above.')}
     `);
-    document.querySelectorAll('tr.clickRow[data-po]').forEach(tr => {
-      tr.style.cursor = 'pointer';
-      tr.onclick = () => { state.selectedPO = tr.dataset.po; renderPurchaseOrderDetail(); };
-    });
+
+    if(rows.length){
+      const searchInput = document.getElementById('poSearchInput');
+      const statusFilter = document.getElementById('poStatusFilter');
+      const applyFilter = () => {
+        const q = searchInput.value.trim().toLowerCase();
+        const statusVal = statusFilter.value;
+        // No status picked: everything except Cancelled (hidden by
+        // default). Picking "Cancelled" explicitly is the only way to see
+        // cancelled orders; picking any other status filters to just that.
+        let list = statusVal ? sorted.filter(r => r.Status === statusVal) : sorted.filter(r => r.Status !== 'Cancelled');
+        if(q) list = list.filter(r =>
+          (r.PONumber||'').toLowerCase().includes(q) ||
+          (r.QuotationNumber||'').toLowerCase().includes(q) ||
+          (r.InvoiceNumber||'').toLowerCase().includes(q));
+        renderRows(list);
+      };
+      searchInput.oninput = applyFilter;
+      statusFilter.onchange = applyFilter;
+      applyFilter();
+    }
+
     document.getElementById('newPOBtn').onclick = openCreatePOModal;
   }catch(e){ setPanel(errorState(e)); }
 }
