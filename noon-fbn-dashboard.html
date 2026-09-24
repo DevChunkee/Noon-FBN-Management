@@ -1678,11 +1678,21 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
       : { number: '' }; // Restock internal creates one PO per supplier, auto-numbered — no single PO number to show upfront
     // Restock internal only: zsku -> Supplier, so "Create Purchase Order"
     // can split checked items into one PO per supplier (each with its own
-    // auto-numbered PO number, per that supplier's prefix/sequence).
+    // auto-numbered PO number, per that supplier's prefix/sequence) — and
+    // Supplier name -> lead time (weeks), so each PO's Expected delivery
+    // date can be PO date + that supplier's own lead time (falling back to
+    // the standard planner lead time when a supplier has none set), same
+    // fallback rule already used by "Create new Purchase Order".
     let supplierByZsku = {};
+    let leadWeeksBySupplier = {};
+    let fallbackSupplierLeadWeeks = 3;
     if(mode === 'restock'){
-      const catalog = await ensureCatalog();
+      const [catalog, supplierRows, settings] = await Promise.all([
+        ensureCatalog(), ensureSuppliers().catch(() => []), getSettings().catch(() => ({}))
+      ]);
       catalog.forEach(c => { supplierByZsku[c.zSKU] = c.Supplier || ''; });
+      supplierRows.forEach(s => { leadWeeksBySupplier[s.Name] = s.LeadTimeWeeks; });
+      fallbackSupplierLeadWeeks = Number(settings.supplier_lead_time_weeks || 3);
     }
     // Creation date and Expected delivery date (Ship to Noon only) are
     // plain text here, not inputs — Creation date is always today, and
@@ -1716,11 +1726,11 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
         <span class="msg" id="batchMsg"></span>
       </div>` : `
       <div class="batch-bar">
-        <label>PO date</label><input type="date" id="batchDate" value="${today()}">
+        <label>PO date</label><span id="batchDate" data-value="${today()}">${today()}</span>
         <button class="btn primary" id="batchAddBtn">Create Purchase Order</button>
         <span class="msg" id="batchMsg"></span>
       </div>
-      <div class="empty" style="text-align:left;padding:0 16px 12px;font-size:11.5px;">Checked items are grouped by their Master Catalog Supplier — one Purchase Order gets created per supplier, each auto-numbered from that supplier's own prefix/sequence (set on the Suppliers page).</div>`;
+      <div class="empty" style="text-align:left;padding:0 16px 12px;font-size:11.5px;">Checked items are grouped by their Master Catalog Supplier — one Purchase Order gets created per supplier, each auto-numbered from that supplier's own prefix/sequence, with Expected delivery date set to PO date + that supplier's lead time (set on the Suppliers page).</div>`;
     setPanel(`
       <div class="panel-head" style="flex-wrap:wrap;gap:10px;">
         <h3 id="rowCountLabel">${rows.length} SKU${rows.length===1?'':'s'} need${rows.length===1?'s':''} a qty</h3>
@@ -1815,7 +1825,7 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
             (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Saving batch ${done}/${of}…`; } });
           msg.className='msg ok'; msg.textContent = `Added ${r.total} line(s) to ${soNumber}.`;
         }else{
-          const poDate = document.getElementById('batchDate').value;
+          const poDate = document.getElementById('batchDate').dataset.value;
           // Group checked items by their Master Catalog Supplier — one PO
           // per supplier, each auto-numbered from that supplier's own
           // prefix/sequence (rpc_next_po_number_for_supplier). Items with
@@ -1835,10 +1845,15 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
             msg.className='msg'; msg.textContent = `Creating PO ${gi+1}/${supplierNames.length} (${supplierName})…`;
             const isRealSupplier = supplierName !== '(no supplier)';
             const { number: poNumber } = await apiPost('nextPONumberForSupplier', { supplierName: isRealSupplier ? supplierName : '' });
+            // Expected delivery = PO date + this supplier's own lead time,
+            // falling back to the standard planner lead time when the
+            // supplier has none set (same rule "Create new Purchase Order" uses).
+            const leadWeeks = isRealSupplier && leadWeeksBySupplier[supplierName] ? Number(leadWeeksBySupplier[supplierName]) : fallbackSupplierLeadWeeks;
+            const expectedDelivery = addDays(poDate, Math.round(leadWeeks * 7));
             const r = await apiPostBatched('addPurchaseOrderBatch', groupItems,
-              { poNumber, poDate, supplier: isRealSupplier ? supplierName : null }, 'linesAdded',
+              { poNumber, poDate, supplier: isRealSupplier ? supplierName : null, expectedDelivery }, 'linesAdded',
               (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Creating PO ${gi+1}/${supplierNames.length} (${supplierName}), batch ${done}/${of}…`; } });
-            created.push(`${poNumber} — ${supplierName} (${r.total} item${r.total===1?'':'s'})`);
+            created.push(`${poNumber} — ${supplierName} (${r.total} item${r.total===1?'':'s'}, due ${expectedDelivery})`);
             totalLines += r.total;
           }
           msg.className='msg ok';
