@@ -264,7 +264,7 @@ const FIELD_MAPS = {
     pod_file_path:'PodFilePath', pod_file_name:'PodFileName', pod_attached_at:'PodAttachedAt', pod_attached_by:'PodAttachedBy' },
   salesOrderLine: { so_number:'SONumber', line_num:'LineNum', zsku:'zSKU', qty_sent:'QtySent',
     confirmed_qty:'ConfirmedQty', delivered_qty:'DeliveredQty', shortage_reason:'ShortageReason',
-    effective_qty:'EffectiveQty', so_status:'SOStatus' },
+    effective_qty:'EffectiveQty', so_status:'SOStatus', available_qty:'AvailableQty' },
   purchaseOrder: { po_number:'PONumber', po_date:'PODate', supplier:'Supplier', expected_delivery:'ExpectedDelivery',
     status:'Status', quotation_number:'QuotationNumber', invoice_number:'InvoiceNumber', received_date:'ReceivedDate',
     expected_receiving_date:'ExpectedReceivingDate', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
@@ -774,8 +774,13 @@ async function renderPicking(){
     const catalog = await ensureCatalog();
     const [orders, allLines] = await Promise.all([apiGet('salesOrder', true), apiGet('salesOrderLine', true)]);
     const header = orders.find(o => o.SONumber === soNumber);
-    const lines = allLines.filter(l => l.SONumber === soNumber);
-    if(!lines.length){ setPanel(emptyState('This order has no lines yet.')); return; }
+    const allMyLines = allLines.filter(l => l.SONumber === soNumber);
+    if(!allMyLines.length){ setPanel(emptyState('This order has no lines yet.')); return; }
+    // Available qty = 0 means there was nothing in Internal WH to give this
+    // line when it was added — it's not pickable, so it doesn't show up
+    // here at all (it's still on the order, just not on this screen).
+    const lines = allMyLines.filter(l => Number(l.AvailableQty||0) > 0);
+    if(!lines.length){ setPanel(emptyState('Nothing to pick — every item on this order has 0 available qty.')); return; }
     // Only pickable while status reads "Pending" — if it's moved on since
     // this screen was opened (e.g. a refresh restored a now-stale link),
     // show a message instead of a form whose Confirm Picking button would
@@ -796,7 +801,7 @@ async function renderPicking(){
         </div>
         <div class="line-fields">
           <button class="btn qtyStepBtn qtyMinusBtn" type="button">−</button>
-          <input type="number" class="confirmInput" min="0" value="${l.QtySent}">
+          <input type="number" class="confirmInput" min="0" value="${Math.min(Number(l.QtySent||0), Number(l.AvailableQty||0))}">
           <button class="btn qtyStepBtn qtyPlusBtn" type="button">+</button>
           <select class="shortage-select reasonSelect" style="display:none;">
             ${reasons.map(r => `<option ${l.ShortageReason===r?'selected':''}>${r}</option>`).join('')}

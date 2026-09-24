@@ -287,7 +287,8 @@ const FIELD_MAPS = {
     pod_file_path:'PodFilePath', pod_file_name:'PodFileName', pod_attached_at:'PodAttachedAt', pod_attached_by:'PodAttachedBy' },
   salesOrderLine: { so_number:'SONumber', line_num:'LineNum', zsku:'zSKU', qty_sent:'QtySent',
     confirmed_qty:'ConfirmedQty', delivered_qty:'DeliveredQty', shortage_reason:'ShortageReason',
-    effective_qty:'EffectiveQty', so_status:'SOStatus', selling_price:'SellingPrice', line_total:'LineTotal' },
+    effective_qty:'EffectiveQty', so_status:'SOStatus', selling_price:'SellingPrice', line_total:'LineTotal',
+    available_qty:'AvailableQty' },
   purchaseOrder: { po_number:'PONumber', po_date:'PODate', supplier:'Supplier', expected_delivery:'ExpectedDelivery',
     status:'Status', quotation_number:'QuotationNumber', invoice_number:'InvoiceNumber', received_date:'ReceivedDate',
     expected_receiving_date:'ExpectedReceivingDate', total_units:'TotalUnits', total_cost:'TotalCost', total_confirmed_qty:'TotalConfirmedQty',
@@ -2246,15 +2247,10 @@ async function renderSalesOrderDetail(){
   document.getElementById('backToSO').onclick = (e) => { e.preventDefault(); state.selectedSO = null; renderSalesOrders(); };
   try{
     const catalog = await ensureCatalog();
-    const [orders, lines, internalRows] = await Promise.all([apiGet('salesOrder'), apiGet('salesOrderLine'), apiGet('internalReplenishment').catch(() => [])]);
+    const [orders, lines] = await Promise.all([apiGet('salesOrder'), apiGet('salesOrderLine')]);
     if(myToken !== soRenderToken) return; // a newer render started while we were fetching — don't append stale panels
     const header = orders.find(o => o.SONumber === soNumber);
     const myLines = lines.filter(l => l.SONumber === soNumber);
-    // Current Internal WH on-hand per zSKU — Confirmed qty's default (before
-    // anyone's picked/edited it) is capped to whatever's actually available
-    // there, not just the planned qty, since planned can be more than the
-    // warehouse can actually pick for this order.
-    const internalOnHandMap = new Map(internalRows.map(r => [r.zSKU, Number(r.InternalOnHand)||0]));
     const status = header ? header.Status : '';       // effective/display status
     const rawStatus = header ? header.RawStatus : '';  // stored status (Scheduled stays Scheduled even once it displays as Delivery)
     const isOpen = status === 'Open';
@@ -2303,11 +2299,14 @@ async function renderSalesOrderDetail(){
     const shortageReasons = ['Stock shortfall - need to investigate','Reserved for another order','Damaged in warehouse','Miscount / data entry error','Other'];
 
     const enrichedLines = myLines.map(l => {
-      const availableQty = internalOnHandMap.has(l.zSKU) ? internalOnHandMap.get(l.zSKU) : 0;
+      // Available qty is a frozen snapshot taken once, when the line was
+      // added (Open) — Internal WH On-hand at that moment, floored at 0.
+      // It does not track live stock afterwards.
+      const availableQty = Number(l.AvailableQty||0);
       const hasConfirmed = l.ConfirmedQty !== null && l.ConfirmedQty !== '' && l.ConfirmedQty !== undefined;
-      // Default (nothing confirmed yet) is capped to whatever's actually
-      // available in Internal WH right now — never more than that, even if
-      // Planned qty asks for more.
+      // Default (nothing confirmed yet) is capped to whatever was available
+      // at add-time — never more than that, even if Planned qty asks for
+      // more.
       const confirmedVal = hasConfirmed ? Number(l.ConfirmedQty) : Math.min(Number(l.QtySent||0), availableQty);
       const hasDelivered = l.DeliveredQty !== null && l.DeliveredQty !== '' && l.DeliveredQty !== undefined;
       const deliveredVal = hasDelivered ? Number(l.DeliveredQty) : Number(l.EffectiveQty||confirmedVal||0);
