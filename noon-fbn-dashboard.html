@@ -1218,6 +1218,7 @@ async function renderCatalog(){
     }
     const CATALOG_PAGE_SIZE = 100;
     let catalogPage = 1;
+    let catalogMatchedZskus = state.catalog.map(c => c.zSKU); // everything currently passing the filter, across ALL pages — kept separate from page visibility so Export can still mean "everything matching the filter" and not just "this page"
     function msFilterHtml(id, label, options, selected){
       return `
       <div class="msfilter" id="ms_${id}">
@@ -1259,8 +1260,9 @@ async function renderCatalog(){
       if(checked.length){
         toExport = state.catalog.filter(c => checked.includes(c.zSKU));
       }else{
-        const visible = Array.from(document.querySelectorAll('tr[data-zsku]')).filter(tr => tr.style.display !== 'none').map(tr => tr.dataset.zsku);
-        toExport = state.catalog.filter(c => visible.includes(c.zSKU));
+        // Nothing checked — export everything matching the current
+        // search/filter, across every page, not just the page on screen.
+        toExport = state.catalog.filter(c => catalogMatchedZskus.includes(c.zSKU));
       }
       exportRows(toExport, 'master-catalog.xlsx', 'Master Catalog');
     };
@@ -1300,6 +1302,7 @@ async function renderCatalog(){
         if(q && !(tr.dataset.zskusearch.includes(q) || tr.dataset.sku.includes(q) || tr.dataset.barcode.includes(q))) show = false;
         if(show) matched.push(tr); else tr.style.display = 'none';
       });
+      catalogMatchedZskus = matched.map(tr => tr.dataset.zsku);
       // Paginate the matched (filtered) set — only the current page's rows
       // actually get shown; the rest stay in the DOM (hidden) so checkbox
       // selection and other per-row state survive a page change.
