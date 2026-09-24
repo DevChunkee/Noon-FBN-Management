@@ -39,6 +39,7 @@
   .nav-item.active{color:var(--text);border-left-color:var(--blue);background:var(--panel-alt);font-weight:500;}
   .nav-dot{width:6px;height:6px;border-radius:50%;background:var(--text-faint);flex:0 0 6px;}
   .nav-item.active .nav-dot{background:var(--blue);}
+  .nav-notif{margin-left:auto;font-size:13px;line-height:1;}
   .nav-section{padding:16px 20px 6px;font-size:10.5px;letter-spacing:.4px;color:var(--text-faint);
     text-transform:uppercase;border-top:1px solid var(--border);margin-top:6px;}
   .rail-foot{margin-top:auto;padding:14px 20px 0;border-top:1px solid var(--border);}
@@ -148,7 +149,7 @@
     <div class="nav-item" data-view="catalog"><span class="nav-dot"></span>Master Catalog</div>
     <div class="nav-item" data-view="salesorders"><span class="nav-dot"></span>Sales Orders</div>
     <div class="nav-item" data-view="purchaseorders"><span class="nav-dot"></span>Purchase Orders</div>
-    <div class="nav-item" data-view="ship"><span class="nav-dot"></span>Ship to Noon</div>
+    <div class="nav-item" data-view="ship"><span class="nav-dot"></span>Ship to Noon<span class="nav-notif" id="shipMondayNotif" style="display:none;" title="It's Monday — time to review this week's Ship to Noon shipment">🔔</span></div>
     <div class="nav-item" data-view="restock"><span class="nav-dot"></span>Restock internal</div>
     <div class="nav-item" data-view="weekly"><span class="nav-dot"></span>Weekly stock update</div>
     <div class="nav-item" data-view="adjust"><span class="nav-dot"></span>Log adjustment</div>
@@ -631,7 +632,7 @@ async function apiPost(action, payload){
       if(error) throw new Error(error.message); result = { ok:true, lineNum: data ? data.line_num : null }; break;
     }
     case 'addSalesOrderBatch': {
-      const { data, error } = await client.rpc('rpc_add_sales_order_batch', { p_so_number: payload.soNumber, p_ship_date: payload.shipDate, p_items: payload.items.map(i => ({ zsku: i.zsku, qty: i.qtySent })) });
+      const { data, error } = await client.rpc('rpc_add_sales_order_batch', { p_so_number: payload.soNumber, p_ship_date: payload.shipDate, p_items: payload.items.map(i => ({ zsku: i.zsku, qty: i.qtySent })), p_expected_delivery_date: payload.expectedDeliveryDate || null });
       if(error) throw new Error(error.message); result = { linesAdded: data }; break;
     }
     case 'addPurchaseOrderBatch': {
@@ -1654,6 +1655,7 @@ async function openCatalogEditModal(zsku){
 
 async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, stockKey, stockLabel, mode){
   $main.innerHTML = viewHead(title, sub) + panelShell('loading');
+  if(mode === 'ship') dismissShipMondayNotif(); // seen it — clear today's reminder badge
   try{
     const allRows = await apiGet(action);
     // Only worth showing a SKU here once it actually needs a qty — rows
@@ -1663,6 +1665,16 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
     const nextNum = mode === 'ship'
       ? await apiGet('nextSONumber').catch(() => ({number:''}))
       : await apiGet('nextPONumber').catch(() => ({number:''}));
+    // Expected delivery date (Ship to Noon only) — auto-calculated off the
+    // same lead time the rest of the app already uses for "when does this
+    // become sellable at Noon" (Creation date + noon_lead_time_weeks).
+    // Read-only: it's a planning estimate, not something to hand-edit here.
+    let noonLeadTimeWeeks = 4;
+    if(mode === 'ship'){
+      const settings = await getSettings().catch(() => ({}));
+      noonLeadTimeWeeks = Number(settings.noon_lead_time_weeks || 4);
+    }
+    const calcExpectedDelivery = (creationDate) => addDays(creationDate || today(), Math.round(noonLeadTimeWeeks * 7));
     const body = rows.length ? rows.map(r => `
       <tr data-zsku="${r.zSKU}" data-stock="${Number(r[stockKey])||0}">
         <td><input type="checkbox" class="rowCheck" ${Number(r[qtyKey])>0?'checked':''}></td>
@@ -1679,6 +1691,7 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
       <div class="batch-bar">
         <label>SO number</label><input type="text" id="batchSO" value="${nextNum.number||''}">
         <label>Creation date</label><input type="date" id="batchDate" value="${today()}">
+        <label>Expected delivery date</label><input type="date" id="batchExpectedDelivery" value="${calcExpectedDelivery(today())}" readonly disabled title="Auto-calculated from Creation date + Noon lead time (${noonLeadTimeWeeks} week${noonLeadTimeWeeks===1?'':'s'}) — set in Settings">
         <button class="btn primary" id="batchAddBtn">Add checked items to Sales Order</button>
         <span class="msg" id="batchMsg"></span>
       </div>` : `
@@ -1747,6 +1760,13 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
       };
       applyReplenPage();
     }
+    if(mode === 'ship'){
+      const batchDateInput = document.getElementById('batchDate');
+      const batchExpectedInput = document.getElementById('batchExpectedDelivery');
+      if(batchDateInput && batchExpectedInput){
+        batchDateInput.onchange = () => { batchExpectedInput.value = calcExpectedDelivery(batchDateInput.value); };
+      }
+    }
     document.querySelectorAll('.copyZskuBtn').forEach(btn => {
       btn.onclick = async (e) => {
         e.stopPropagation();
@@ -1778,7 +1798,8 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
         if(mode === 'ship'){
           const soNumber = document.getElementById('batchSO').value;
           const shipDate = document.getElementById('batchDate').value;
-          const r = await apiPostBatched('addSalesOrderBatch', items, { soNumber, shipDate }, 'linesAdded',
+          const expectedDeliveryDate = document.getElementById('batchExpectedDelivery').value;
+          const r = await apiPostBatched('addSalesOrderBatch', items, { soNumber, shipDate, expectedDeliveryDate }, 'linesAdded',
             (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Saving batch ${done}/${of}…`; } });
           msg.className='msg ok'; msg.textContent = `Added ${r.total} line(s) to ${soNumber}.`;
         }else{
@@ -4278,6 +4299,25 @@ function setPanel(html){ const p = document.getElementById('panelBody'); if(p) p
 function emptyState(msg){ return `<div class="empty">${msg}</div>`; }
 function errorState(e){ return `<div class="empty" style="color:var(--red)">Couldn't load: ${e.message}</div>`; }
 
+// Monday reminder — a small bell on the "Ship to Noon" nav item, shown only
+// on Mondays (local time), so it's a nudge to review/send this week's
+// shipment before you've even opened the screen. Dismissed for the day the
+// moment you actually visit Ship to Noon (see renderReplenishment), tracked
+// in localStorage per viewer/browser so it doesn't nag again same-day after
+// a refresh, but comes back next Monday regardless.
+function updateShipMondayNotif(){
+  const el = document.getElementById('shipMondayNotif');
+  if(!el) return;
+  let dismissed = '';
+  try{ dismissed = localStorage.getItem('shipMondayNotifDismissed') || ''; }catch(e){ /* ignore */ }
+  const isMonday = new Date().getDay() === 1;
+  el.style.display = (isMonday && dismissed !== today()) ? '' : 'none';
+}
+function dismissShipMondayNotif(){
+  try{ localStorage.setItem('shipMondayNotifDismissed', today()); }catch(e){ /* ignore */ }
+  updateShipMondayNotif();
+}
+
 // ---------------------------------------------------------------------------
 // Pagination — a small shared helper used by every list/line-items screen
 // that needs a page-size cap. Two flavors of caller:
@@ -4306,6 +4346,7 @@ document.querySelectorAll('.nav-item').forEach(n => n.onclick = () => switchView
 
 (async function init(){
   restoreView(); // land back on whatever screen/order was open before a refresh
+  updateShipMondayNotif();
   // Seed the nav stack with wherever we just landed, via replaceState (not
   // pushState) so the initial load doesn't leave a duplicate back-target.
   navStack = [{ view: state.view, selectedSO: state.selectedSO, selectedPO: state.selectedPO }];
