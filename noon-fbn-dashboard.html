@@ -2335,17 +2335,10 @@ async function renderSalesOrderDetail(){
           </select>`
         : `<span style="font-size:11.5px;color:var(--text-dim);">${l.ShortageReason||''}</span>`;
       const availableShort = Number(l._availableQty||0) < Number(l.QtySent||0);
-      // Available qty is a frozen snapshot — "Recheck stock" lets the office
-      // manually re-capture it against Internal WH stock as it stands right
-      // now, useful if stock arrived (or moved) after this line was added.
-      // Once Confirmed qty is locked in, rechecking no longer means anything.
-      const recaptureBtn = !l._hasConfirmed
-        ? `<button type="button" class="btn recaptureAvailableBtn" data-linenum="${l.LineNum}" title="Re-check current Internal WH stock and refresh Available qty" style="padding:0 5px;font-size:11px;margin-left:5px;">↻</button>`
-        : '';
       return `
       <tr data-linenum="${l.LineNum}"><td class="sku">${c.SKU||''}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td>
         <td class="num">${fmt(l.QtySent)}</td>
-        ${showAvailableCol ? `<td class="num"${availableShort?' style="color:var(--amber);"':''}>${fmt(l._availableQty)}${recaptureBtn}</td>` : ''}
+        ${showAvailableCol ? `<td class="num"${availableShort?' style="color:var(--amber);"':''}>${fmt(l._availableQty)}</td>` : ''}
         <td class="num">${fmt(l.SellingPrice)}</td><td class="num">${fmt(l.LineTotal)}</td>
         ${showConfirmedCol ? `<td class="num">${confirmedCell}</td>` : ''}
         ${showDeliveredCol ? `<td class="num">${deliveredCell}</td>` : ''}
@@ -2503,11 +2496,20 @@ async function renderSalesOrderDetail(){
       };
     });
 
+    // "Recheck stock" re-captures Available qty for every not-yet-confirmed
+    // line in one go, against Internal WH stock as it stands right now —
+    // useful if stock arrived (or moved) after these lines were added.
+    // Once Confirmed qty is locked in, rechecking no longer means anything,
+    // so lines past that point are left untouched.
+    const recaptureLines = enrichedLines.filter(l => !l._hasConfirmed);
     const linesPanel = document.createElement('div');
     linesPanel.className = 'panel';
     linesPanel.innerHTML = `
       <div class="panel-head"><h3>${myLines.length} line item(s)</h3>
-        ${myLines.length ? exportBtnHtml('soExportBtn','Export lines') : ''}</div>
+        <div style="display:flex;gap:8px;">
+        ${recaptureLines.length ? `<button class="btn" id="recaptureAllBtn" title="Re-check current Internal WH stock and refresh Available qty for every not-yet-confirmed line">↻ Recheck stock</button>` : ''}
+        ${myLines.length ? exportBtnHtml('soExportBtn','Export lines') : ''}
+        </div></div>
       ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th>${showAvailableCol ? '<th class="num">Available</th>' : ''}<th class="num">Selling price</th><th class="num">Line total</th>${showConfirmedCol ? '<th class="num">Confirmed</th>' : ''}${showDeliveredCol ? '<th class="num">Delivered</th>' : ''}<th>Shortage reason</th><th></th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
         <div class="batch-bar" style="flex-wrap:wrap;border-top:1px solid var(--border);font-weight:600;">
@@ -2546,16 +2548,18 @@ async function renderSalesOrderDetail(){
         }catch(e){ alert(e.message); btn.disabled = false; }
       };
     });
-    document.querySelectorAll('.recaptureAvailableBtn').forEach(btn => {
-      btn.onclick = async () => {
-        const lineNum = btn.dataset.linenum;
-        btn.disabled = true;
+    const recaptureAllBtn = document.getElementById('recaptureAllBtn');
+    if(recaptureAllBtn){
+      recaptureAllBtn.onclick = async () => {
+        recaptureAllBtn.disabled = true; recaptureAllBtn.textContent = 'Rechecking…';
         try{
-          await apiPost('recaptureAvailableQty', { soNumber, lineNum });
+          for(const l of recaptureLines){
+            await apiPost('recaptureAvailableQty', { soNumber, lineNum: l.LineNum });
+          }
           renderSalesOrderDetail();
-        }catch(e){ alert(e.message); btn.disabled = false; }
+        }catch(e){ alert(e.message); recaptureAllBtn.disabled = false; recaptureAllBtn.textContent = '↻ Recheck stock'; }
       };
-    });
+    }
 
     if(!isOpen){ return; } // "Add items" only applies to a draft (Open) order — once Confirm has moved it on, items are locked in and edited via the line table itself
 
