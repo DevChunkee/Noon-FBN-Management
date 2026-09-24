@@ -1577,7 +1577,9 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
     const body = rows.length ? rows.map(r => `
       <tr data-zsku="${r.zSKU}" data-stock="${Number(r[stockKey])||0}">
         <td><input type="checkbox" class="rowCheck" ${Number(r[qtyKey])>0?'checked':''}></td>
-        <td class="sku">${r.SKU||r.zSKU}</td>
+        <td class="sku">${mode === 'ship'
+          ? `${r.zSKU}<button type="button" class="btn copyZskuBtn" data-zsku="${r.zSKU}" title="Copy zSKU" style="padding:0 4px;font-size:10px;margin-left:6px;line-height:1.6;">⧉</button>`
+          : (r.SKU||r.zSKU)}</td>
         <td>${r.ItemName||''}</td>
         <td class="num">${fmt(r[stockKey])}</td>
         <td class="num">${fmt(r.WeeksOnHand !== undefined ? r.WeeksOnHand : r.WeeksOfCover)}</td>
@@ -1608,13 +1610,19 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
       </div>
       ${rows.length ? batchBar : ''}
       ${rows.length ? `<table>
-        <thead><tr><th><input type="checkbox" id="selectAllCheck" title="Select all shown rows"></th><th>SKU</th><th>Item</th><th class="num">${stockLabel}</th><th class="num">Weeks cover</th><th class="num">MOQ</th><th class="num">Qty</th></tr></thead>
+        <thead><tr><th><input type="checkbox" id="selectAllCheck" title="Select all shown rows"></th><th>${mode === 'ship' ? 'ZSKU' : 'SKU'}</th><th>Item</th><th class="num">${stockLabel}</th><th class="num">Weeks cover</th><th class="num">MOQ</th><th class="num">Qty</th></tr></thead>
         <tbody>${body}</tbody></table>` : emptyState(`Nothing needs a qty right now — all ${allRows.length} tracked SKU${allRows.length===1?'':'s'} ${allRows.length===1?'is':'are'} covered.`)}
     `);
     function updateSelCount(){
       const n = document.querySelectorAll('tr[data-zsku] .rowCheck:checked').length;
       const el = document.getElementById('selCount');
       if(el) el.textContent = `${n} selected`;
+      // Once anything's checked, dim the rows that aren't — makes the
+      // selected set easy to scan at a glance in a long list.
+      document.querySelectorAll('tr[data-zsku]').forEach(tr => {
+        const checked = tr.querySelector('.rowCheck').checked;
+        tr.style.opacity = (n > 0 && !checked) ? '0.35' : '';
+      });
     }
     function setAllChecks(checked){
       document.querySelectorAll('tr[data-zsku]').forEach(tr => {
@@ -1628,6 +1636,18 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
     updateSelCount();
     const selectAllCheck = document.getElementById('selectAllCheck');
     if(selectAllCheck) selectAllCheck.onchange = () => setAllChecks(selectAllCheck.checked);
+    document.querySelectorAll('.copyZskuBtn').forEach(btn => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const z = btn.dataset.zsku;
+        try{
+          await navigator.clipboard.writeText(z);
+          const original = btn.textContent;
+          btn.textContent = '✓';
+          setTimeout(() => { btn.textContent = original; }, 900);
+        }catch(err){ alert('Could not copy — your browser blocked clipboard access. zSKU: ' + z); }
+      };
+    });
     const btn = document.getElementById('batchAddBtn');
     if(btn) btn.onclick = async () => {
       const items = [];
