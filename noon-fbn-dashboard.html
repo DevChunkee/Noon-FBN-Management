@@ -2295,6 +2295,10 @@ async function renderSalesOrderDetail(){
     // deliveredEditableStage turns on) — same "hide until relevant" idea as
     // the PO screen's showConfirmedCol/showReceivedCol.
     const showConfirmedCol = !isOpen;
+    // Available qty is captured the moment a line is added (Open) — show it
+    // from Open onward, unlike Confirmed/Delivered which only mean
+    // something at later stages.
+    const showAvailableCol = true;
     const showDeliveredCol = isInTransit || isPODAttached || isDelivered || isCompleted;
     const shortageReasons = ['Stock shortfall - need to investigate','Reserved for another order','Damaged in warehouse','Miscount / data entry error','Other'];
 
@@ -2330,7 +2334,7 @@ async function renderSalesOrderDetail(){
       return `
       <tr data-linenum="${l.LineNum}"><td class="sku">${c.SKU||''}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td>
         <td class="num">${fmt(l.QtySent)}</td>
-        ${showConfirmedCol ? `<td class="num"${availableShort?' style="color:var(--amber);"':''}>${fmt(l._availableQty)}</td>` : ''}
+        ${showAvailableCol ? `<td class="num"${availableShort?' style="color:var(--amber);"':''}>${fmt(l._availableQty)}</td>` : ''}
         <td class="num">${fmt(l.SellingPrice)}</td><td class="num">${fmt(l.LineTotal)}</td>
         ${showConfirmedCol ? `<td class="num">${confirmedCell}</td>` : ''}
         ${showDeliveredCol ? `<td class="num">${deliveredCell}</td>` : ''}
@@ -2493,14 +2497,14 @@ async function renderSalesOrderDetail(){
     linesPanel.innerHTML = `
       <div class="panel-head"><h3>${myLines.length} line item(s)</h3>
         ${myLines.length ? exportBtnHtml('soExportBtn','Export lines') : ''}</div>
-      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th>${showConfirmedCol ? '<th class="num">Available</th>' : ''}<th class="num">Selling price</th><th class="num">Line total</th>${showConfirmedCol ? '<th class="num">Confirmed</th>' : ''}${showDeliveredCol ? '<th class="num">Delivered</th>' : ''}<th>Shortage reason</th><th></th></tr></thead>
+      ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th>${showAvailableCol ? '<th class="num">Available</th>' : ''}<th class="num">Selling price</th><th class="num">Line total</th>${showConfirmedCol ? '<th class="num">Confirmed</th>' : ''}${showDeliveredCol ? '<th class="num">Delivered</th>' : ''}<th>Shortage reason</th><th></th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
         <div class="batch-bar" style="flex-wrap:wrap;border-top:1px solid var(--border);font-weight:600;">
           <label>Total planned qty</label><span>${fmt(totalPlannedQty)}</span>
           <label>Value</label><span>${fmt(totalPlannedValue)}</span>
+          ${showAvailableCol ? `<span style="color:var(--text-faint);font-weight:400;">|</span>
+          <label>Total available qty</label><span>${fmt(totalAvailableQty)}</span>` : ''}
           ${showConfirmedCol ? `<span style="color:var(--text-faint);font-weight:400;">|</span>
-          <label>Total available qty</label><span>${fmt(totalAvailableQty)}</span>
-          <span style="color:var(--text-faint);font-weight:400;">|</span>
           <label>Total confirmed qty</label><span>${fmt(totalConfirmedQty)}</span>
           <label>Value</label><span>${fmt(totalConfirmedValue)}</span>` : ''}
           ${showDeliveredCol ? `<span style="color:var(--text-faint);font-weight:400;">|</span>
