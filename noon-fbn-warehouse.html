@@ -29,11 +29,6 @@
   .conn.ok .conn-dot{background:var(--green);}
   .conn.err .conn-dot{background:var(--red);}
 
-  .tabs{display:flex;background:var(--panel);border-bottom:1px solid var(--border);overflow-x:auto;}
-  .tab{flex:1;text-align:center;padding:14px 8px;font-size:14px;font-weight:500;color:var(--text-dim);
-    cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;min-width:90px;}
-  .tab.active{color:var(--text);border-bottom-color:var(--blue);}
-
   .main{flex:1;padding:18px;max-width:900px;margin:0 auto;width:100%;}
   .view-title{font-size:19px;font-weight:700;margin:0 0 4px;}
   .view-sub{color:var(--text-dim);font-size:13px;margin:0 0 16px;line-height:1.5;}
@@ -118,15 +113,10 @@
       <div class="brand">Noon FBN Warehouse</div>
       <div class="brand-sub">delivery · picking · receipt</div>
     </div>
-    <div class="conn" id="connStatus"><span class="conn-dot"></span><span id="connLabel">not connected</span></div>
-  </div>
-  <div class="tabs">
-    <div class="tab" data-view="overview">Overview</div>
-    <div class="tab" data-view="delivery">Delivery</div>
-    <div class="tab" data-view="picking">Picking</div>
-    <div class="tab" data-view="intransit">In-transit</div>
-    <div class="tab" data-view="receipt">Receipt</div>
-    <div class="tab" data-view="settings">Settings</div>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div class="conn" id="connStatus"><span class="conn-dot"></span><span id="connLabel">not connected</span></div>
+      <button type="button" class="btn" id="settingsIconBtn" title="Settings" style="padding:5px 9px;">⚙</button>
+    </div>
   </div>
   <div class="main" id="main"></div>
 </div>
@@ -452,7 +442,6 @@ window.addEventListener('popstate', () => {
   const prev = navStack[navStack.length - 1];
   restoringNav = true;
   state.view = prev.view; state.selectedSO = prev.selectedSO; state.selectedPO = prev.selectedPO;
-  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === state.view));
   render();
   restoringNav = false;
 });
@@ -471,7 +460,6 @@ function restoreView(){
       state.view = saved.view;
       state.selectedSO = saved.selectedSO || null;
       state.selectedPO = saved.selectedPO || null;
-      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === state.view));
     }
   }catch(e){ /* ignore corrupt/blocked storage — falls back to the default view */ }
 }
@@ -479,7 +467,6 @@ function switchView(v){
   state.view = v;
   state.selectedSO = null;
   state.selectedPO = null;
-  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === v));
   persistView();
   render();
 }
@@ -523,8 +510,14 @@ function renderLogin(){
   };
 }
 
-function viewHead(title, sub){
-  return `<h2 class="view-title">${title}</h2><p class="view-sub">${sub}</p>`;
+function viewHead(title, sub, showBack){
+  // showBack adds a "← Overview" link above the title — used on every
+  // top-level screen (Delivery, Picking, In-transit, Receipt, Settings)
+  // now that the tab bar is gone and Overview is the only real "menu";
+  // detail screens (Picking/Dispatch/Receipt for one order) already have
+  // their own "back to picker" link and skip this one.
+  const back = showBack ? `<a href="#" class="back toOverviewLink">← Overview</a>` : '';
+  return `${back}<h2 class="view-title">${title}</h2><p class="view-sub">${sub}</p>`;
 }
 function panelShell(){ return `<div class="panel" id="panelBody"><div class="loading">loading…</div></div>`; }
 function setPanel(html){ const p = document.getElementById('panelBody'); if(p) p.outerHTML = `<div class="panel" id="panelBody">${html}</div>`; }
@@ -619,7 +612,7 @@ async function renderOverview(){
 // review-and-Dispatch screen (no qty editing — that's already locked in).
 async function renderDelivery(){
   state.view = 'delivery'; persistView();
-  $main.innerHTML = viewHead('Delivery', 'Scheduled Sales Orders, most urgent first. Tap one that\'s reached its shipment day to Dispatch.') + panelShell();
+  $main.innerHTML = viewHead('Delivery', 'Scheduled Sales Orders, most urgent first. Tap one that\'s reached its shipment day to Dispatch.', true) + panelShell();
   try{
     const orders = await apiGet('salesOrder');
     const lines = await apiGet('salesOrderLine');
@@ -668,7 +661,7 @@ async function renderDelivery(){
 // renderDelivery/renderDispatch) once the shipment day arrives.
 async function renderPickingPicker(){
   state.view = 'picking'; state.selectedSO = null; persistView();
-  $main.innerHTML = viewHead('Picking', 'Sales Orders confirmed by the office and ready to pick, most urgent first.') + panelShell();
+  $main.innerHTML = viewHead('Picking', 'Sales Orders confirmed by the office and ready to pick, most urgent first.', true) + panelShell();
   try{
     const orders = await apiGet('salesOrder');
     // Most urgent first: ExpectedShipDay is (Scheduled date, or else the
@@ -706,7 +699,7 @@ async function renderPickingPicker(){
 // in the dashboard, not here.
 async function renderInTransit(){
   state.view = 'intransit'; state.selectedSO = null; state.selectedPO = null; persistView();
-  $main.innerHTML = viewHead('In-transit', 'Dispatched Sales Orders — tap one to attach its Proof of Delivery.') + panelShell();
+  $main.innerHTML = viewHead('In-transit', 'Dispatched Sales Orders — tap one to attach its Proof of Delivery.', true) + panelShell();
   try{
     const orders = await apiGet('salesOrder');
     const active = orders.filter(o => o.Status === 'In transit');
@@ -961,7 +954,7 @@ async function renderDispatch(){
 // ---------------- Receipt ----------------
 async function renderReceiptPicker(){
   state.view = 'receipt'; state.selectedPO = null; persistView();
-  $main.innerHTML = viewHead('Receipt', 'Purchase Orders confirmed by the supplier and ready to receive.') + panelShell();
+  $main.innerHTML = viewHead('Receipt', 'Purchase Orders confirmed by the supplier and ready to receive.', true) + panelShell();
   try{
     const orders = await apiGet('purchaseOrder');
     // A PO only shows up here once it's actually in the "Purchase Order"
@@ -1286,7 +1279,7 @@ async function renderReceipt(){
 // this file (DEFAULT_CONFIG above), so warehouse staff only ever see their
 // account status and a sign-out button.
 function renderSettings(){
-  $main.innerHTML = viewHead('Settings', 'Account') + panelShell();
+  $main.innerHTML = viewHead('Settings', 'Account', true) + panelShell();
   setPanel(
     state.session
       ? `<div style="padding:16px;">
@@ -1299,7 +1292,13 @@ function renderSettings(){
   if(signOutBtn) signOutBtn.onclick = async () => { await signOut(); render(); };
 }
 
-document.querySelectorAll('.tab').forEach(t => t.onclick = () => switchView(t.dataset.view));
+document.getElementById('settingsIconBtn').onclick = () => switchView('settings');
+// Delegated so it keeps working across every re-render — $main's own
+// content is replaced constantly, but $main itself never is.
+$main.addEventListener('click', (e) => {
+  const link = e.target.closest('.toOverviewLink');
+  if(link){ e.preventDefault(); switchView('overview'); }
+});
 
 (async function init(){
   restoreView(); // land back on whatever screen/order was open before a refresh
