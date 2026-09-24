@@ -1665,12 +1665,11 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
     const nextNum = mode === 'ship'
       ? await apiGet('nextSONumber').catch(() => ({number:''}))
       : await apiGet('nextPONumber').catch(() => ({number:''}));
-    // Expected delivery date (Ship to Noon only) — pre-filled off the same
-    // lead time the rest of the app already uses for "when does this become
-    // sellable at Noon" (Creation date + noon_lead_time_weeks), but it's a
-    // normal editable field — override it whenever a specific shipment's
-    // date is known to differ. Re-filled (not locked) whenever Creation
-    // date changes, since that's the input it's derived from.
+    // Creation date and Expected delivery date (Ship to Noon only) are
+    // plain text here, not inputs — Creation date is always today, and
+    // Expected delivery date is Creation date + noon_lead_time_weeks, same
+    // lead time the rest of the app uses for "when does this become
+    // sellable at Noon."
     let noonLeadTimeWeeks = 4;
     if(mode === 'ship'){
       const settings = await getSettings().catch(() => ({}));
@@ -1692,8 +1691,8 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
     const batchBar = mode === 'ship' ? `
       <div class="batch-bar">
         <label>SO number</label><input type="text" id="batchSO" value="${nextNum.number||''}">
-        <label>Creation date</label><input type="date" id="batchDate" value="${today()}">
-        <label>Expected delivery date</label><input type="date" id="batchExpectedDelivery" value="${calcExpectedDelivery(today())}" title="Auto-filled from Creation date + Noon lead time (${noonLeadTimeWeeks} week${noonLeadTimeWeeks===1?'':'s'}) — edit if this shipment differs">
+        <label>Creation date</label><span id="batchDate" data-value="${today()}">${today()}</span>
+        <label>Expected delivery date</label><span id="batchExpectedDelivery" data-value="${calcExpectedDelivery(today())}" title="Creation date + Noon lead time (${noonLeadTimeWeeks} week${noonLeadTimeWeeks===1?'':'s'})">${calcExpectedDelivery(today())}</span>
         <button class="btn primary" id="batchAddBtn">Add checked items to Sales Order</button>
         <span class="msg" id="batchMsg"></span>
       </div>` : `
@@ -1762,13 +1761,6 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
       };
       applyReplenPage();
     }
-    if(mode === 'ship'){
-      const batchDateInput = document.getElementById('batchDate');
-      const batchExpectedInput = document.getElementById('batchExpectedDelivery');
-      if(batchDateInput && batchExpectedInput){
-        batchDateInput.onchange = () => { batchExpectedInput.value = calcExpectedDelivery(batchDateInput.value); };
-      }
-    }
     document.querySelectorAll('.copyZskuBtn').forEach(btn => {
       btn.onclick = async (e) => {
         e.stopPropagation();
@@ -1799,8 +1791,8 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
       try{
         if(mode === 'ship'){
           const soNumber = document.getElementById('batchSO').value;
-          const shipDate = document.getElementById('batchDate').value;
-          const expectedDeliveryDate = document.getElementById('batchExpectedDelivery').value;
+          const shipDate = document.getElementById('batchDate').dataset.value;
+          const expectedDeliveryDate = document.getElementById('batchExpectedDelivery').dataset.value;
           const r = await apiPostBatched('addSalesOrderBatch', items, { soNumber, shipDate, expectedDeliveryDate }, 'linesAdded',
             (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Saving batch ${done}/${of}…`; } });
           msg.className='msg ok'; msg.textContent = `Added ${r.total} line(s) to ${soNumber}.`;
