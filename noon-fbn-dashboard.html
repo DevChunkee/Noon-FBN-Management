@@ -642,6 +642,19 @@ async function apiPost(action, payload){
       const { error } = await client.from('master_catalog').update({ status: payload.status }).eq('zsku', payload.zsku);
       if(error) throw new Error(error.message); result = { ok:true }; break;
     }
+    // A SKU with any history (stock ledger entries, SO/PO lines, inventory
+    // adjustments, sales/stock logs, etc.) can't be hard-deleted — the
+    // foreign keys those tables hold back to master_catalog block it. That's
+    // surfaced to the person as ARCHIVE_BLOCKED so the UI can offer
+    // "Archive instead" rather than just showing a raw database error.
+    case 'deleteCatalogItem': {
+      const { error } = await client.from('master_catalog').delete().eq('zsku', payload.zsku);
+      if(error){
+        if(error.code === '23503') throw new Error('ARCHIVE_BLOCKED');
+        throw new Error(error.message);
+      }
+      result = { ok:true }; break;
+    }
     case 'updateCatalogItem': {
       const { error } = await client.from('master_catalog').update({
         barcode: payload.barcode || null, sku: payload.sku || null, item_name: payload.itemName,
@@ -1515,7 +1528,16 @@ async function openCatalogEditModal(zsku){
   overlay.id = 'catalogEditOverlay';
   overlay.innerHTML = `
     <div class="modal">
-      <div class="panel-head"><h3>Edit ${c.SKU} — ${c.zSKU}</h3></div>
+      <div class="panel-head" style="position:relative;">
+        <h3>Edit ${c.SKU} — ${c.zSKU}</h3>
+        <div style="position:relative;">
+          <button type="button" class="btn" id="catalogItemMenuBtn" title="Delete or archive this item" style="padding:5px 9px;">⚙</button>
+          <div id="catalogItemMenu" style="display:none;position:absolute;right:0;top:34px;background:var(--panel);border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.45);z-index:20;min-width:170px;overflow:hidden;">
+            <button type="button" class="btn" id="catalogArchiveBtn" style="display:block;width:100%;text-align:left;border-radius:0;border:none;color:var(--amber);padding:10px 12px;">Archive item</button>
+            <button type="button" class="btn" id="catalogDeleteBtn" style="display:block;width:100%;text-align:left;border-radius:0;border:none;color:var(--red);padding:10px 12px;">Delete item</button>
+          </div>
+        </div>
+      </div>
       <form class="form" id="catalogEditForm">
         <div class="field"><label>zSKU (fixed)</label><input type="text" value="${c.zSKU}" disabled></div>
         <div class="field"><label>SKU</label><input type="text" name="sku" value="${c.SKU||''}" required></div>
@@ -1545,6 +1567,50 @@ async function openCatalogEditModal(zsku){
   document.body.appendChild(overlay);
   overlay.onclick = (e) => { if(e.target === overlay) closeCatalogEditModal(); };
   document.getElementById('catalogEditCancelBtn').onclick = closeCatalogEditModal;
+
+  const itemMenuBtn = document.getElementById('catalogItemMenuBtn');
+  const itemMenu = document.getElementById('catalogItemMenu');
+  itemMenuBtn.onclick = (e) => { e.stopPropagation(); itemMenu.style.display = itemMenu.style.display === 'none' ? '' : 'none'; };
+  // Attached to the overlay (not document) so it's automatically cleaned up
+  // when the modal closes, instead of piling up a new document-level
+  // listener every time this modal is opened.
+  overlay.addEventListener('click', (e) => {
+    if(itemMenu.style.display !== 'none' && !itemMenu.contains(e.target) && e.target !== itemMenuBtn) itemMenu.style.display = 'none';
+  });
+  document.getElementById('catalogArchiveBtn').onclick = async () => {
+    itemMenu.style.display = 'none';
+    if(!confirm(`Archive ${c.SKU} — ${c.zSKU}? It's set to Discontinued and drops out of active screens, but its history and any linked orders stay intact. You can reactivate it later from here.`)) return;
+    try{
+      await apiPost('updateCatalogStatus', { zsku, status: 'Discontinued' });
+      state.catalog = [];
+      closeCatalogEditModal();
+      render();
+    }catch(e){ alert('Could not archive: ' + e.message); }
+  };
+  document.getElementById('catalogDeleteBtn').onclick = async () => {
+    itemMenu.style.display = 'none';
+    if(!confirm(`Permanently delete ${c.SKU} — ${c.zSKU}? This can't be undone.`)) return;
+    try{
+      await apiPost('deleteCatalogItem', { zsku });
+      state.catalog = [];
+      closeCatalogEditModal();
+      render();
+    }catch(e){
+      if(e.message === 'ARCHIVE_BLOCKED'){
+        if(confirm(`${c.SKU} — ${c.zSKU} can't be deleted — it already has history on record (stock movements, Sales/Purchase Order lines, adjustments, or similar) that depends on it.\n\nArchive it instead? It'll be set to Discontinued and drop out of active screens, but its history stays intact.`)){
+          try{
+            await apiPost('updateCatalogStatus', { zsku, status: 'Discontinued' });
+            state.catalog = [];
+            closeCatalogEditModal();
+            render();
+          }catch(e2){ alert('Could not archive: ' + e2.message); }
+        }
+      }else{
+        alert('Could not delete: ' + e.message);
+      }
+    }
+  };
+
   const catalogEditForm = document.getElementById('catalogEditForm');
   wireMarginCalc(catalogEditForm, 'catalogEditMarginField', referralFeePct, lowMarginThreshold);
   const supplierField = wireSupplierField(catalogEditForm, supplierNames);
