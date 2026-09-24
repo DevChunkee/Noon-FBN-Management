@@ -620,6 +620,10 @@ async function apiPost(action, payload){
       if(error) throw new Error(error.message.includes('already received') ? error.message.replace(/^.*?:/, '').trim() : error.message);
       result = { ok:true }; break;
     }
+    case 'updateSOLineQtySent': {
+      const { data, error } = await client.rpc('rpc_update_so_line_qty_sent', { p_so_number: payload.soNumber, p_line_num: Number(payload.lineNum), p_qty_sent: Number(payload.qtySent) });
+      if(error) throw new Error(error.message); result = { ok:true, availableQty: data }; break;
+    }
     case 'recaptureAvailableQty': {
       const { data, error } = await client.rpc('rpc_recapture_available_qty', { p_so_number: payload.soNumber, p_line_num: Number(payload.lineNum) });
       if(error) throw new Error(error.message); result = { ok:true, availableQty: data }; break;
@@ -2335,15 +2339,21 @@ async function renderSalesOrderDetail(){
           </select>`
         : `<span style="font-size:11.5px;color:var(--text-dim);">${l.ShortageReason||''}</span>`;
       const availableShort = Number(l._availableQty||0) < Number(l.QtySent||0);
+      // Planned qty is editable while the order's still a draft (Open) —
+      // staged locally (no write, no confirm dialog) until "Save" is
+      // clicked; same for deleting a line, via the ✕/↺ toggle below.
+      const plannedCell = isOpen
+        ? `<input type="number" class="plannedQtyInput" min="0" value="${l.QtySent}" data-original="${l.QtySent}" style="width:80px;text-align:center;">`
+        : fmt(l.QtySent);
       return `
       <tr data-linenum="${l.LineNum}"><td class="sku">${c.SKU||''}</td><td>${barcodeItemLabel(l.zSKU, catalog)}</td>
-        <td class="num">${fmt(l.QtySent)}</td>
+        <td class="num">${plannedCell}</td>
         ${showAvailableCol ? `<td class="num"${availableShort?' style="color:var(--amber);"':''}>${fmt(l._availableQty)}</td>` : ''}
         <td class="num">${fmt(l.SellingPrice)}</td><td class="num">${fmt(l.LineTotal)}</td>
         ${showConfirmedCol ? `<td class="num">${confirmedCell}</td>` : ''}
         ${showDeliveredCol ? `<td class="num">${deliveredCell}</td>` : ''}
         <td>${shortageCell}</td>
-        <td>${structLocked ? '' : `<button type="button" class="btn deleteLineBtn" data-linenum="${l.LineNum}" style="color:var(--red);" title="Delete this line">✕</button>`}</td></tr>`;
+        <td>${structLocked ? '' : `<button type="button" class="btn deleteLineToggleBtn" data-linenum="${l.LineNum}" style="color:var(--red);" title="Delete this line">✕</button>`}</td></tr>`;
     }).join('');
 
     const totalPlannedQty = enrichedLines.reduce((s,l) => s + Number(l.QtySent||0), 0);
@@ -2458,6 +2468,12 @@ async function renderSalesOrderDetail(){
           alert('You have unsaved Confirmed/Delivered qty changes. Click "Confirm" (or "Confirm POD") to save them, or refresh to discard.');
           return;
         }
+        const dirtyPlannedEdit = Array.from(document.querySelectorAll('.plannedQtyInput')).some(inp => inp.value !== inp.dataset.original)
+          || !!document.querySelector('tr.pending-delete');
+        if(dirtyPlannedEdit){
+          alert('You have unsaved Planned qty/delete changes on the line items below. Click "Save" or "Cancel" there first.');
+          return;
+        }
         if(!confirm(a.confirmMsg)) return;
         btn.disabled = true;
         try{
@@ -2507,6 +2523,8 @@ async function renderSalesOrderDetail(){
     linesPanel.innerHTML = `
       <div class="panel-head"><h3>${myLines.length} line item(s)</h3>
         <div style="display:flex;gap:8px;">
+        <button class="btn" id="saveLineEditsBtn" style="display:none;color:var(--blue);">Save</button>
+        <button class="btn" id="cancelLineEditsBtn" style="display:none;">Cancel</button>
         ${recaptureLines.length ? `<button class="btn" id="recaptureAllBtn" title="Re-check current Internal WH stock and refresh Available qty for every not-yet-confirmed line">↻ Recheck stock</button>` : ''}
         ${myLines.length ? exportBtnHtml('soExportBtn','Export lines') : ''}
         </div></div>
@@ -2537,17 +2555,66 @@ async function renderSalesOrderDetail(){
         };
       });
     }
-    document.querySelectorAll('.deleteLineBtn').forEach(btn => {
-      btn.onclick = async () => {
-        const lineNum = btn.dataset.linenum;
-        if(!confirm('Delete this line item? This can\'t be undone.')) return;
-        btn.disabled = true;
-        try{
-          await apiPost('deleteSalesOrderLine', { soNumber, lineNum });
-          renderSalesOrderDetail();
-        }catch(e){ alert(e.message); btn.disabled = false; }
+    // Planned qty edits and line deletes (Open only) are staged locally —
+    // no per-click confirm dialog, no write — until "Save" is clicked;
+    // "Cancel" puts every row back exactly as it was. saveLineEditsBtn /
+    // cancelLineEditsBtn only show up once something's actually dirty.
+    const saveLineEditsBtn = document.getElementById('saveLineEditsBtn');
+    const cancelLineEditsBtn = document.getElementById('cancelLineEditsBtn');
+    const checkLineDirty = () => {
+      const dirty = Array.from(document.querySelectorAll('.plannedQtyInput')).some(inp => inp.value !== inp.dataset.original)
+        || !!document.querySelector('tr.pending-delete');
+      if(saveLineEditsBtn) saveLineEditsBtn.style.display = dirty ? '' : 'none';
+      if(cancelLineEditsBtn) cancelLineEditsBtn.style.display = dirty ? '' : 'none';
+      return dirty;
+    };
+    document.querySelectorAll('.plannedQtyInput').forEach(inp => {
+      inp.oninput = checkLineDirty;
+    });
+    document.querySelectorAll('.deleteLineToggleBtn').forEach(btn => {
+      btn.onclick = () => {
+        const row = btn.closest('tr');
+        const pending = row.classList.toggle('pending-delete');
+        row.style.opacity = pending ? '0.4' : '';
+        row.style.textDecoration = pending ? 'line-through' : '';
+        const plannedInp = row.querySelector('.plannedQtyInput');
+        if(plannedInp) plannedInp.disabled = pending;
+        btn.textContent = pending ? '↺' : '✕';
+        btn.title = pending ? 'Undo delete' : 'Delete this line';
+        checkLineDirty();
       };
     });
+    if(cancelLineEditsBtn) cancelLineEditsBtn.onclick = () => {
+      document.querySelectorAll('tr.pending-delete').forEach(row => {
+        row.classList.remove('pending-delete');
+        row.style.opacity = ''; row.style.textDecoration = '';
+        const plannedInp = row.querySelector('.plannedQtyInput');
+        if(plannedInp) plannedInp.disabled = false;
+        const toggleBtn = row.querySelector('.deleteLineToggleBtn');
+        if(toggleBtn){ toggleBtn.textContent = '✕'; toggleBtn.title = 'Delete this line'; }
+      });
+      document.querySelectorAll('.plannedQtyInput').forEach(inp => { inp.value = inp.dataset.original; });
+      checkLineDirty();
+    };
+    if(saveLineEditsBtn) saveLineEditsBtn.onclick = async () => {
+      saveLineEditsBtn.disabled = true; if(cancelLineEditsBtn) cancelLineEditsBtn.disabled = true;
+      saveLineEditsBtn.textContent = 'Saving…';
+      try{
+        const rows = Array.from(document.querySelectorAll('tr[data-linenum]'));
+        for(const row of rows){
+          const lineNum = row.dataset.linenum;
+          if(row.classList.contains('pending-delete')){
+            await apiPost('deleteSalesOrderLine', { soNumber, lineNum });
+            continue;
+          }
+          const inp = row.querySelector('.plannedQtyInput');
+          if(inp && inp.value !== inp.dataset.original){
+            await apiPost('updateSOLineQtySent', { soNumber, lineNum, qtySent: inp.value });
+          }
+        }
+        renderSalesOrderDetail();
+      }catch(e){ alert(e.message); saveLineEditsBtn.disabled = false; saveLineEditsBtn.textContent = 'Save'; if(cancelLineEditsBtn) cancelLineEditsBtn.disabled = false; }
+    };
     const recaptureAllBtn = document.getElementById('recaptureAllBtn');
     if(recaptureAllBtn){
       recaptureAllBtn.onclick = async () => {
