@@ -1665,10 +1665,12 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
     const nextNum = mode === 'ship'
       ? await apiGet('nextSONumber').catch(() => ({number:''}))
       : await apiGet('nextPONumber').catch(() => ({number:''}));
-    // Expected delivery date (Ship to Noon only) — auto-calculated off the
-    // same lead time the rest of the app already uses for "when does this
-    // become sellable at Noon" (Creation date + noon_lead_time_weeks).
-    // Read-only: it's a planning estimate, not something to hand-edit here.
+    // Expected delivery date (Ship to Noon only) — pre-filled off the same
+    // lead time the rest of the app already uses for "when does this become
+    // sellable at Noon" (Creation date + noon_lead_time_weeks), but it's a
+    // normal editable field — override it whenever a specific shipment's
+    // date is known to differ. Re-filled (not locked) whenever Creation
+    // date changes, since that's the input it's derived from.
     let noonLeadTimeWeeks = 4;
     if(mode === 'ship'){
       const settings = await getSettings().catch(() => ({}));
@@ -1691,7 +1693,7 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
       <div class="batch-bar">
         <label>SO number</label><input type="text" id="batchSO" value="${nextNum.number||''}">
         <label>Creation date</label><input type="date" id="batchDate" value="${today()}">
-        <label>Expected delivery date</label><input type="date" id="batchExpectedDelivery" value="${calcExpectedDelivery(today())}" readonly disabled title="Auto-calculated from Creation date + Noon lead time (${noonLeadTimeWeeks} week${noonLeadTimeWeeks===1?'':'s'}) — set in Settings">
+        <label>Expected delivery date</label><input type="date" id="batchExpectedDelivery" value="${calcExpectedDelivery(today())}" title="Auto-filled from Creation date + Noon lead time (${noonLeadTimeWeeks} week${noonLeadTimeWeeks===1?'':'s'}) — edit if this shipment differs">
         <button class="btn primary" id="batchAddBtn">Add checked items to Sales Order</button>
         <span class="msg" id="batchMsg"></span>
       </div>` : `
