@@ -307,7 +307,7 @@ const FIELD_MAPS = {
   adjustmentLog: { adj_date:'Date', type:'Type', zsku:'zSKU', qty:'Qty', reason:'Reason' },
   suppliers: { id:'Id', name:'Name', contact_name:'ContactName', phone:'Phone', email:'Email',
     lead_time_weeks:'LeadTimeWeeks', notes:'Notes', status:'Status',
-    order_prefix:'OrderPrefix', sequence_digits:'SequenceDigits' },
+    order_prefix:'OrderPrefix', sequence_digits:'SequenceDigits', starting_number:'StartingNumber' },
   deliveryLocations: { id:'Id', location_name:'LocationName', location_address:'LocationAddress',
     location_link:'LocationLink', shipment_days:'ShipmentDays', status:'Status' },
 };
@@ -754,10 +754,11 @@ async function apiPost(action, payload){
         name: payload.name, contact_name: payload.contactName || null, phone: payload.phone || null,
         email: payload.email || null, lead_time_weeks: payload.leadTimeWeeks ? Number(payload.leadTimeWeeks) : null,
         notes: payload.notes || null, order_prefix: payload.orderPrefix || '',
-        sequence_digits: payload.sequenceDigits ? Number(payload.sequenceDigits) : 3
+        sequence_digits: payload.sequenceDigits ? Number(payload.sequenceDigits) : 3,
+        starting_number: payload.startingNumber ? Number(payload.startingNumber) : 1
       });
       if(error) throw new Error(error.code === '23505' ? 'A supplier with that name already exists.'
-        : (error.code === '42703' ? 'The database doesn\'t have order_prefix/sequence_digits yet — ask an admin to run migration 35_supplier_po_numbering.sql.' : error.message));
+        : (error.code === '42703' ? 'The database doesn\'t have order_prefix/sequence_digits/starting_number yet — ask an admin to run migrations 35_supplier_po_numbering.sql and 36_supplier_po_starting_number.sql.' : error.message));
       result = { ok:true }; break;
     }
     case 'updateSupplier': {
@@ -765,10 +766,11 @@ async function apiPost(action, payload){
         name: payload.name, contact_name: payload.contactName || null, phone: payload.phone || null,
         email: payload.email || null, lead_time_weeks: payload.leadTimeWeeks ? Number(payload.leadTimeWeeks) : null,
         notes: payload.notes || null, order_prefix: payload.orderPrefix || '',
-        sequence_digits: payload.sequenceDigits ? Number(payload.sequenceDigits) : 3
+        sequence_digits: payload.sequenceDigits ? Number(payload.sequenceDigits) : 3,
+        starting_number: payload.startingNumber ? Number(payload.startingNumber) : 1
       }).eq('id', payload.id);
       if(error) throw new Error(error.code === '23505' ? 'A supplier with that name already exists.'
-        : (error.code === '42703' ? 'The database doesn\'t have order_prefix/sequence_digits yet — ask an admin to run migration 35_supplier_po_numbering.sql.' : error.message));
+        : (error.code === '42703' ? 'The database doesn\'t have order_prefix/sequence_digits/starting_number yet — ask an admin to run migrations 35_supplier_po_numbering.sql and 36_supplier_po_starting_number.sql.' : error.message));
       result = { ok:true }; break;
     }
     case 'nextPONumberForSupplier': {
@@ -4132,7 +4134,9 @@ async function renderSuppliers(){
   rows = rows.slice().sort((a,b) => (a.Name||'').localeCompare(b.Name||''));
   const nextPreview = (s) => {
     const digits = s.SequenceDigits || 3;
-    return `${s.OrderPrefix||''}${'0'.repeat(Math.max(0,digits-1))}1`;
+    const start = s.StartingNumber || 1;
+    const numStr = String(start); // sequence digits is a minimum width, never a cap — never truncate a longer starting number
+    return `${s.OrderPrefix||''}${numStr.padStart(Math.max(digits, numStr.length), '0')}`;
   };
   const rowsHtml = rows.map(s => `
     <tr data-id="${s.Id}">
@@ -4194,9 +4198,10 @@ function openSupplierModal(s){
         <div class="field"><label>Email</label><input type="email" name="email" value="${isEdit ? (s.Email||'').replace(/"/g,'&quot;') : ''}"></div>
         <div class="field"><label>Lead time (weeks)</label><input type="number" name="leadTimeWeeks" min="0" step="0.5" value="${isEdit && s.LeadTimeWeeks != null ? s.LeadTimeWeeks : ''}"></div>
         <div class="field"><label>Order prefix</label><input type="text" name="orderPrefix" placeholder="e.g. R#" value="${isEdit ? (s.OrderPrefix||'').replace(/"/g,'&quot;') : ''}"></div>
-        <div class="field"><label>Sequence digits</label><input type="number" name="sequenceDigits" min="1" max="8" value="${isEdit && s.SequenceDigits != null ? s.SequenceDigits : 3}"></div>
+        <div class="field"><label>Sequence digits</label><input type="number" name="sequenceDigits" min="1" max="10" value="${isEdit && s.SequenceDigits != null ? s.SequenceDigits : 3}"></div>
+        <div class="field"><label>Starts with</label><input type="number" name="startingNumber" min="1" value="${isEdit && s.StartingNumber != null ? s.StartingNumber : 1}"></div>
         <div class="field span2" style="font-size:11.5px;color:var(--text-dim);">
-          Together these set this supplier's Purchase Order numbering — e.g. prefix "R#" with 3 digits gives R#001, R#002, … Leave prefix blank for plain numbers only.
+          Together these set this supplier's Purchase Order numbering. Prefix "R#", 3 digits, starts with 1 → R#001, R#002, … Prefix "R#", 1 digit, starts with 10 → R#10, R#11, … ("Sequence digits" is a minimum width, not a cap — a bigger starting number or later count just prints in full, it never gets cut down.) Leave prefix blank for plain numbers only. Once existing POs already go past your starting number, new ones continue from the highest one used, not back at the start.
         </div>
         <div class="field span2"><label>Notes</label><textarea name="notes" rows="3">${isEdit ? (s.Notes||'') : ''}</textarea></div>
         <div class="form-foot">
