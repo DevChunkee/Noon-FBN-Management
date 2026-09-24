@@ -306,7 +306,8 @@ const FIELD_MAPS = {
   weeklyStockLog: { week_ending:'WeekEnding', zsku:'zSKU', saleable_qty:'SaleableQty' },
   adjustmentLog: { adj_date:'Date', type:'Type', zsku:'zSKU', qty:'Qty', reason:'Reason' },
   suppliers: { id:'Id', name:'Name', contact_name:'ContactName', phone:'Phone', email:'Email',
-    lead_time_weeks:'LeadTimeWeeks', notes:'Notes', status:'Status' },
+    lead_time_weeks:'LeadTimeWeeks', notes:'Notes', status:'Status',
+    order_prefix:'OrderPrefix', sequence_digits:'SequenceDigits' },
   deliveryLocations: { id:'Id', location_name:'LocationName', location_address:'LocationAddress',
     location_link:'LocationLink', shipment_days:'ShipmentDays', status:'Status' },
 };
@@ -752,19 +753,27 @@ async function apiPost(action, payload){
       const { error } = await client.from('suppliers').insert({
         name: payload.name, contact_name: payload.contactName || null, phone: payload.phone || null,
         email: payload.email || null, lead_time_weeks: payload.leadTimeWeeks ? Number(payload.leadTimeWeeks) : null,
-        notes: payload.notes || null
+        notes: payload.notes || null, order_prefix: payload.orderPrefix || '',
+        sequence_digits: payload.sequenceDigits ? Number(payload.sequenceDigits) : 3
       });
-      if(error) throw new Error(error.code === '23505' ? 'A supplier with that name already exists.' : error.message);
+      if(error) throw new Error(error.code === '23505' ? 'A supplier with that name already exists.'
+        : (error.code === '42703' ? 'The database doesn\'t have order_prefix/sequence_digits yet — ask an admin to run migration 35_supplier_po_numbering.sql.' : error.message));
       result = { ok:true }; break;
     }
     case 'updateSupplier': {
       const { error } = await client.from('suppliers').update({
         name: payload.name, contact_name: payload.contactName || null, phone: payload.phone || null,
         email: payload.email || null, lead_time_weeks: payload.leadTimeWeeks ? Number(payload.leadTimeWeeks) : null,
-        notes: payload.notes || null
+        notes: payload.notes || null, order_prefix: payload.orderPrefix || '',
+        sequence_digits: payload.sequenceDigits ? Number(payload.sequenceDigits) : 3
       }).eq('id', payload.id);
-      if(error) throw new Error(error.code === '23505' ? 'A supplier with that name already exists.' : error.message);
+      if(error) throw new Error(error.code === '23505' ? 'A supplier with that name already exists.'
+        : (error.code === '42703' ? 'The database doesn\'t have order_prefix/sequence_digits yet — ask an admin to run migration 35_supplier_po_numbering.sql.' : error.message));
       result = { ok:true }; break;
+    }
+    case 'nextPONumberForSupplier': {
+      const { data, error } = await client.rpc('rpc_next_po_number_for_supplier', { p_supplier_name: payload.supplierName || null });
+      if(error) throw new Error(error.message); result = { number: data }; break;
     }
     case 'archiveSupplier': {
       const { error } = await client.from('suppliers').update({ status: 'Archived' }).eq('id', payload.id);
@@ -1664,7 +1673,15 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
     const rows = allRows.filter(r => Number(r[qtyKey]) > 0);
     const nextNum = mode === 'ship'
       ? await apiGet('nextSONumber').catch(() => ({number:''}))
-      : await apiGet('nextPONumber').catch(() => ({number:''}));
+      : { number: '' }; // Restock internal creates one PO per supplier, auto-numbered — no single PO number to show upfront
+    // Restock internal only: zsku -> Supplier, so "Create Purchase Order"
+    // can split checked items into one PO per supplier (each with its own
+    // auto-numbered PO number, per that supplier's prefix/sequence).
+    let supplierByZsku = {};
+    if(mode === 'restock'){
+      const catalog = await ensureCatalog();
+      catalog.forEach(c => { supplierByZsku[c.zSKU] = c.Supplier || ''; });
+    }
     // Creation date and Expected delivery date (Ship to Noon only) are
     // plain text here, not inputs — Creation date is always today, and
     // Expected delivery date is Creation date + noon_lead_time_weeks, same
@@ -1697,12 +1714,11 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
         <span class="msg" id="batchMsg"></span>
       </div>` : `
       <div class="batch-bar">
-        <label>PO number</label><input type="text" id="batchPO" value="${nextNum.number||''}">
         <label>PO date</label><input type="date" id="batchDate" value="${today()}">
-        <label>Supplier</label><input type="text" id="batchSupplier" placeholder="same for this order, edit per line later">
         <button class="btn primary" id="batchAddBtn">Create Purchase Order</button>
         <span class="msg" id="batchMsg"></span>
-      </div>`;
+      </div>
+      <div class="empty" style="text-align:left;padding:0 16px 12px;font-size:11.5px;">Checked items are grouped by their Master Catalog Supplier — one Purchase Order gets created per supplier, each auto-numbered from that supplier's own prefix/sequence (set on the Suppliers page).</div>`;
     setPanel(`
       <div class="panel-head" style="flex-wrap:wrap;gap:10px;">
         <h3 id="rowCountLabel">${rows.length} SKU${rows.length===1?'':'s'} need${rows.length===1?'s':''} a qty</h3>
@@ -1782,7 +1798,7 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
         if(check.checked && qty > 0){
           items.push(mode === 'ship'
             ? { zsku: tr.dataset.zsku, qtySent: qty }
-            : { zsku: tr.dataset.zsku, qtyOrdered: qty });
+            : { zsku: tr.dataset.zsku, qtyOrdered: qty, supplier: supplierByZsku[tr.dataset.zsku] || '' });
         }
       });
       const msg = document.getElementById('batchMsg');
@@ -1797,12 +1813,34 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
             (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Saving batch ${done}/${of}…`; } });
           msg.className='msg ok'; msg.textContent = `Added ${r.total} line(s) to ${soNumber}.`;
         }else{
-          const poNumber = document.getElementById('batchPO').value;
           const poDate = document.getElementById('batchDate').value;
-          const supplier = document.getElementById('batchSupplier').value;
-          const r = await apiPostBatched('addPurchaseOrderBatch', items, { poNumber, poDate, supplier }, 'linesAdded',
-            (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Saving batch ${done}/${of}…`; } });
-          msg.className='msg ok'; msg.textContent = `Added ${r.total} line(s) to ${poNumber}.`;
+          // Group checked items by their Master Catalog Supplier — one PO
+          // per supplier, each auto-numbered from that supplier's own
+          // prefix/sequence (rpc_next_po_number_for_supplier). Items with
+          // no supplier assigned land in a "(no supplier)" group and get
+          // the old global PO- fallback numbering.
+          const groups = {};
+          items.forEach(i => {
+            const key = i.supplier || '(no supplier)';
+            (groups[key] = groups[key] || []).push({ zsku: i.zsku, qtyOrdered: i.qtyOrdered });
+          });
+          const supplierNames = Object.keys(groups).sort();
+          const created = [];
+          let totalLines = 0;
+          for(let gi = 0; gi < supplierNames.length; gi++){
+            const supplierName = supplierNames[gi];
+            const groupItems = groups[supplierName];
+            msg.className='msg'; msg.textContent = `Creating PO ${gi+1}/${supplierNames.length} (${supplierName})…`;
+            const isRealSupplier = supplierName !== '(no supplier)';
+            const { number: poNumber } = await apiPost('nextPONumberForSupplier', { supplierName: isRealSupplier ? supplierName : '' });
+            const r = await apiPostBatched('addPurchaseOrderBatch', groupItems,
+              { poNumber, poDate, supplier: isRealSupplier ? supplierName : null }, 'linesAdded',
+              (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Creating PO ${gi+1}/${supplierNames.length} (${supplierName}), batch ${done}/${of}…`; } });
+            created.push(`${poNumber} — ${supplierName} (${r.total} item${r.total===1?'':'s'})`);
+            totalLines += r.total;
+          }
+          msg.className='msg ok';
+          msg.textContent = `Created ${created.length} purchase order${created.length===1?'':'s'}, ${totalLines} line(s) total: ${created.join('; ')}`;
         }
       }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
       btn.disabled = false;
@@ -4092,6 +4130,10 @@ async function renderSuppliers(){
   try{ rows = await ensureSuppliers(true); }
   catch(e){ setPanel(errorState(e)); return; }
   rows = rows.slice().sort((a,b) => (a.Name||'').localeCompare(b.Name||''));
+  const nextPreview = (s) => {
+    const digits = s.SequenceDigits || 3;
+    return `${s.OrderPrefix||''}${'0'.repeat(Math.max(0,digits-1))}1`;
+  };
   const rowsHtml = rows.map(s => `
     <tr data-id="${s.Id}">
       <td>${s.Name||''}</td>
@@ -4099,6 +4141,8 @@ async function renderSuppliers(){
       <td>${s.Phone||''}</td>
       <td>${s.Email||''}</td>
       <td class="num">${s.LeadTimeWeeks ?? ''}</td>
+      <td class="sku">${s.OrderPrefix||'—'}</td>
+      <td style="font-family:var(--mono);font-size:12px;color:var(--text-dim);">e.g. ${nextPreview(s)}</td>
       <td>${s.Status === 'Archived' ? '<span class="chip">Archived</span>' : '<span class="chip green">Active</span>'}</td>
       <td style="white-space:normal;max-width:220px;font-size:12px;color:var(--text-dim);">${s.Notes||''}</td>
       <td style="white-space:nowrap;">
@@ -4110,7 +4154,7 @@ async function renderSuppliers(){
   setPanel(`
     <div class="panel-head"><h3>${rows.length} supplier${rows.length===1?'':'s'}</h3>
       <button class="btn primary" id="supplierAddBtn">Add supplier</button></div>
-    ${rows.length ? `<table><thead><tr><th>Name</th><th>Contact</th><th>Phone</th><th>Email</th><th class="num">Lead time (wks)</th><th>Status</th><th>Notes</th><th></th></tr></thead>
+    ${rows.length ? `<table><thead><tr><th>Name</th><th>Contact</th><th>Phone</th><th>Email</th><th class="num">Lead time (wks)</th><th>Order prefix</th><th>Number format</th><th>Status</th><th>Notes</th><th></th></tr></thead>
       <tbody>${rowsHtml}</tbody></table>`
       : emptyState('No suppliers yet — add one to start populating the Master Catalog and Purchase Order supplier fields.')}
   `);
@@ -4149,6 +4193,11 @@ function openSupplierModal(s){
         <div class="field"><label>Phone</label><input type="text" name="phone" value="${isEdit ? (s.Phone||'').replace(/"/g,'&quot;') : ''}"></div>
         <div class="field"><label>Email</label><input type="email" name="email" value="${isEdit ? (s.Email||'').replace(/"/g,'&quot;') : ''}"></div>
         <div class="field"><label>Lead time (weeks)</label><input type="number" name="leadTimeWeeks" min="0" step="0.5" value="${isEdit && s.LeadTimeWeeks != null ? s.LeadTimeWeeks : ''}"></div>
+        <div class="field"><label>Order prefix</label><input type="text" name="orderPrefix" placeholder="e.g. R#" value="${isEdit ? (s.OrderPrefix||'').replace(/"/g,'&quot;') : ''}"></div>
+        <div class="field"><label>Sequence digits</label><input type="number" name="sequenceDigits" min="1" max="8" value="${isEdit && s.SequenceDigits != null ? s.SequenceDigits : 3}"></div>
+        <div class="field span2" style="font-size:11.5px;color:var(--text-dim);">
+          Together these set this supplier's Purchase Order numbering — e.g. prefix "R#" with 3 digits gives R#001, R#002, … Leave prefix blank for plain numbers only.
+        </div>
         <div class="field span2"><label>Notes</label><textarea name="notes" rows="3">${isEdit ? (s.Notes||'') : ''}</textarea></div>
         <div class="form-foot">
           <button class="btn primary" type="submit">${isEdit ? 'Save' : 'Add supplier'}</button>
