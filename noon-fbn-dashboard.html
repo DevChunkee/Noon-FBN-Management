@@ -4198,10 +4198,13 @@ function openSupplierModal(s){
         <div class="field"><label>Email</label><input type="email" name="email" value="${isEdit ? (s.Email||'').replace(/"/g,'&quot;') : ''}"></div>
         <div class="field"><label>Lead time (weeks)</label><input type="number" name="leadTimeWeeks" min="0" step="0.5" value="${isEdit && s.LeadTimeWeeks != null ? s.LeadTimeWeeks : ''}"></div>
         <div class="field"><label>Order prefix</label><input type="text" name="orderPrefix" placeholder="e.g. R#" value="${isEdit ? (s.OrderPrefix||'').replace(/"/g,'&quot;') : ''}"></div>
-        <div class="field"><label>Sequence digits</label><input type="number" name="sequenceDigits" min="1" max="10" value="${isEdit && s.SequenceDigits != null ? s.SequenceDigits : 3}"></div>
-        <div class="field"><label>Starts with</label><input type="number" name="startingNumber" min="1" value="${isEdit && s.StartingNumber != null ? s.StartingNumber : 1}"></div>
+        <div class="field"><label>Starts with</label><input type="number" name="startingNumber" id="supplierStartingNumber" min="1" value="${isEdit && s.StartingNumber != null ? s.StartingNumber : 1}"></div>
+        <div class="field"><label>Sequence digits</label>
+          <input type="text" id="supplierDigitsPreview" disabled style="color:var(--text-dim);">
+          <input type="hidden" name="sequenceDigits" id="supplierDigitsHidden">
+        </div>
         <div class="field span2" style="font-size:11.5px;color:var(--text-dim);">
-          Together these set this supplier's Purchase Order numbering. Prefix "R#", 3 digits, starts with 1 → R#001, R#002, … Prefix "R#", 1 digit, starts with 10 → R#10, R#11, … ("Sequence digits" is a minimum width, not a cap — a bigger starting number or later count just prints in full, it never gets cut down.) Leave prefix blank for plain numbers only. Once existing POs already go past your starting number, new ones continue from the highest one used, not back at the start.
+          Sequence digits is set automatically from "Starts with" — e.g. starting at 1 pads to 3 digits (001, 002, …); starting at 10 uses 2 (10, 11, …). It's a minimum width, not a cap: once the count naturally grows past it, the fuller number prints as-is, it never gets cut down. Leave prefix blank for plain numbers only. Once existing POs already go past your starting number, new ones continue from the highest one used, not back at the start.
         </div>
         <div class="field span2"><label>Notes</label><textarea name="notes" rows="3">${isEdit ? (s.Notes||'') : ''}</textarea></div>
         <div class="form-foot">
@@ -4214,6 +4217,19 @@ function openSupplierModal(s){
   document.body.appendChild(overlay);
   overlay.onclick = (e) => { if(e.target === overlay) closeModalOverlay('supplierOverlay'); };
   document.getElementById('supplierCancelBtn').onclick = () => closeModalOverlay('supplierOverlay');
+  // Sequence digits is derived, not typed — always the digit-length of
+  // "Starts with" (min 1), recomputed live as that field changes.
+  const startInput = document.getElementById('supplierStartingNumber');
+  const digitsPreview = document.getElementById('supplierDigitsPreview');
+  const digitsHidden = document.getElementById('supplierDigitsHidden');
+  const refreshDigits = () => {
+    const n = Math.max(1, parseInt(startInput.value, 10) || 1);
+    const d = String(n).length;
+    digitsHidden.value = d;
+    digitsPreview.value = `${d} digit${d===1?'':'s'} (e.g. ${String(n).padStart(d,'0')})`;
+  };
+  startInput.addEventListener('input', refreshDigits);
+  refreshDigits();
   const supplierForm = document.getElementById('supplierForm');
   supplierForm.addEventListener('keydown', (e) => {
     if(e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') e.preventDefault();
