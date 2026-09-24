@@ -150,9 +150,7 @@
     <div class="nav-item" data-view="purchaseorders"><span class="nav-dot"></span>Purchase Orders</div>
     <div class="nav-item" data-view="ship"><span class="nav-dot"></span>Ship to Noon</div>
     <div class="nav-item" data-view="restock"><span class="nav-dot"></span>Restock internal</div>
-    <div class="nav-item" data-view="shipments"><span class="nav-dot"></span>Shipments</div>
     <div class="nav-item" data-view="weekly"><span class="nav-dot"></span>Weekly stock update</div>
-    <div class="nav-item" data-view="grn"><span class="nav-dot"></span>Log GRN</div>
     <div class="nav-item" data-view="adjust"><span class="nav-dot"></span>Log adjustment</div>
     <div class="nav-item" data-view="salesfunnel"><span class="nav-dot"></span>Log Monthly Sales</div>
     <div class="nav-section">Reports</div>
@@ -161,7 +159,7 @@
     <div class="nav-item" data-view="report-insights"><span class="nav-dot"></span>Product Insights</div>
     <div class="nav-section">Configurations</div>
     <div class="nav-item" data-view="suppliers"><span class="nav-dot"></span>Suppliers</div>
-    <div class="nav-item" data-view="deliverylocations"><span class="nav-dot"></span>Shipments</div>
+    <div class="nav-item" data-view="deliverylocations"><span class="nav-dot"></span>Delivery Locations</div>
     <div class="nav-item" data-view="settings"><span class="nav-dot"></span>Settings</div>
     <div class="rail-foot">
       <div class="conn" id="connStatus"><span class="conn-dot"></span><span id="connLabel">not connected</span></div>
@@ -1097,9 +1095,7 @@ async function render(){
   if(v === 'purchaseorders') return state.selectedPO ? renderPurchaseOrderDetail() : renderPurchaseOrders();
   if(v === 'ship') return renderReplenishment('replenishmentPlanner', 'Ship to Noon FBN', 'This week\'s shipment quantities — recalculates the moment you paste new weekly stock numbers.', 'ShipQty', 'SuggestedShipQty', 'NoonSaleableQty', 'Noon saleable', 'ship');
   if(v === 'restock') return renderReplenishment('internalReplenishment', 'Restock internal WH', 'Purchase order quantities needed from your supplier, paced by supplier lead time.', 'POQty', 'SuggestedPOQty', 'InternalOnHand', 'Internal on hand', 'restock');
-  if(v === 'shipments') return renderShipments();
   if(v === 'weekly') return renderWeekly();
-  if(v === 'grn') return renderGRN();
   if(v === 'adjust') return renderAdjust();
   if(v === 'salesfunnel') return renderSalesFunnel();
   if(v === 'report-sales') return renderSalesReport();
@@ -1687,30 +1683,6 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
       }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
       btn.disabled = false;
     };
-  }catch(e){ setPanel(errorState(e)); }
-}
-
-async function renderShipments(){
-  $main.innerHTML = viewHead('Shipments', 'Every Sales Order sent to Noon FBN, with its status through the Open → Completed workflow.') + panelShell('loading');
-  try{
-    const rows = await apiGet('salesOrder');
-    const body = rows.length ? rows.slice().reverse().map(r => `
-      <tr>
-        <td class="sku">${r.SONumber}</td>
-        <td>${r.ShipDate||''}</td>
-        <td>${r.ExpectedSellableDate||''}</td>
-        <td class="num">${fmt(r.TotalUnitsSent)}</td>
-        <td class="num">${fmt(r.TotalConfirmedQty)}</td>
-        <td class="num">${fmt(r.TotalDeliveredQty)}</td>
-        <td>${soStatusChip(r.Status)}</td>
-      </tr>`).join('') : '';
-    setPanel(`
-      <div class="panel-head"><h3>${rows.length} shipment${rows.length===1?'':'s'}</h3>
-        <button class="btn" onclick="refreshAll()">Refresh</button></div>
-      ${rows.length ? `<table>
-        <thead><tr><th>SO</th><th>Creation date</th><th>Expected sellable</th><th class="num">Sent</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Status</th></tr></thead>
-        <tbody>${body}</tbody></table>` : emptyState('No shipments logged yet — use "Log shipment (SO)".')}
-    `);
   }catch(e){ setPanel(errorState(e)); }
 }
 
@@ -3501,131 +3473,6 @@ function openPOImportModal(poNumber, header, catalog){
   };
 }
 
-async function renderGRN(){
-  $main.innerHTML = viewHead('Log a GRN', 'Noon\'s confirmation of what they actually received against a Sales Order. Rolls up into that SO automatically.') + panelShell('loading');
-  try{
-    const [catalog, orders] = await Promise.all([ensureCatalog(), ensureSalesOrders()]);
-    const skuOptions = catalog.map(c => `<option value="${c.zSKU}">${c.SKU} — ${c.ItemName}</option>`).join('');
-    const soOptions = orders.map(o => `<option value="${o.SONumber}">${o.SONumber} — ${o.Status||'Shipped'}</option>`).join('');
-    setPanel(`
-      <div class="panel-head"><h3>Import Noon's GRN report</h3>
-        ${exportBtnHtml('grnExportBtn','Export GRN log')}</div>
-      <div class="importzone" id="grnDrop">Click to choose the .xlsx GRN report Noon gives you (Summary / GRN_Details / QC_Fail_Details tabs)
-        <input type="file" id="grnFile" accept=".xlsx,.xls">
-      </div>
-      <div id="grnImportBody"></div>
-    `);
-    document.getElementById('grnExportBtn').onclick = async () => {
-      const log = await apiGet('grnLog');
-      exportRows(log, 'grn-log.xlsx', 'GRN Log');
-    };
-    document.getElementById('grnDrop').onclick = () => document.getElementById('grnFile').click();
-    document.getElementById('grnFile').onchange = async (ev) => {
-      const file = ev.target.files[0];
-      if(!file) return;
-      const body = document.getElementById('grnImportBody');
-      body.innerHTML = '<div class="loading">parsing…</div>';
-      try{
-        const wb = await readFileAsWorkbook(file);
-        const summary = sheetRows(wb, 'Summary');
-        const details = sheetRows(wb, 'GRN_Details');
-        const qcFail = sheetRows(wb, 'QC_Fail_Details');
-        if(!details.length) throw new Error('No "GRN_Details" tab found — is this the right file?');
-
-        const asn = (summary[0] && summary[0]['ASN Number']) || (details[0] && details[0]['ASN Number']) || '';
-        const grnDateRaw = details[0] && details[0]['GRN Date'];
-        const grnDate = grnDateRaw ? new Date(grnDateRaw).toISOString().slice(0,10) : today();
-
-        const sums = {}; // zsku -> {received, damaged}
-        let unmatchedReceived = 0, unmatchedDamaged = 0;
-        details.forEach(row => {
-          const raw = row['SKU'];
-          const qty = Number(row['GRN Quantity']||0);
-          const z = resolveZsku(raw, catalog);
-          if(!z){ unmatchedReceived += qty; return; }
-          sums[z] = sums[z] || {received:0, damaged:0};
-          sums[z].received += qty;
-        });
-        qcFail.forEach(row => {
-          const raw = row['SKU'];
-          const qty = Number(row['GRN Quantity']||0);
-          const z = resolveZsku(raw, catalog);
-          if(!z){ unmatchedDamaged += qty; return; }
-          sums[z] = sums[z] || {received:0, damaged:0};
-          sums[z].damaged += qty;
-        });
-
-        const zskus = Object.keys(sums);
-        const rowsHtml = zskus.map(z => `
-          <tr><td class="sku">${catalogLabel(z, catalog)}</td>
-            <td class="num">${sums[z].received}</td><td class="num">${sums[z].damaged}</td></tr>`).join('');
-        const warn = (unmatchedReceived + unmatchedDamaged) > 0
-          ? `<div class="empty" style="color:var(--amber);text-align:left;padding:10px 16px;">
-               ${unmatchedReceived + unmatchedDamaged} unit(s) in this file couldn't be matched to a zSKU in your Master Catalog (often "UNIDENTIFIED" scans) — they're excluded from this import.</div>` : '';
-
-        body.innerHTML = `
-          <div class="batch-bar">
-            <label>SO number</label><input type="text" id="grnImportSO" value="${asn}">
-            <label>GRN number</label><input type="text" id="grnImportNum" value="GRN-${asn}">
-            <label>GRN date</label><input type="date" id="grnImportDate" value="${grnDate}">
-          </div>
-          ${warn}
-          <table><thead><tr><th>SKU</th><th class="num">Qty received</th><th class="num">Qty damaged/short</th></tr></thead>
-            <tbody>${rowsHtml}</tbody></table>
-          <div class="batch-bar">
-            <button class="btn primary" id="grnImportBtn">Import ${zskus.length} SKU row(s)</button>
-            <span class="msg" id="grnImportMsg"></span>
-          </div>`;
-        document.getElementById('grnImportBtn').onclick = async () => {
-          const soNumber = document.getElementById('grnImportSO').value;
-          const grnNumber = document.getElementById('grnImportNum').value;
-          const gDate = document.getElementById('grnImportDate').value;
-          const msg = document.getElementById('grnImportMsg');
-          msg.className='msg'; msg.textContent='Saving…';
-          try{
-            const items = zskus.map(z => ({
-              grnDate: gDate, grnNumber, soNumber, zsku: z,
-              qtyReceived: sums[z].received, qtyDamaged: sums[z].damaged
-            }));
-            const r = await apiPostBatched('addGRNBatch', items, {}, 'added',
-              (done, of) => { if(of > 1){ msg.className='msg'; msg.textContent = `Saving batch ${done}/${of}…`; } });
-            msg.className='msg ok'; msg.textContent = `Imported ${r.total} row(s).`;
-          }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
-        };
-      }catch(e){
-        body.innerHTML = `<div class="empty" style="color:var(--red)">${e.message}</div>`;
-      }
-    };
-
-    const manual = document.createElement('div');
-    manual.className = 'panel';
-    manual.innerHTML = `
-      <div class="panel-head"><h3>Or log one manually</h3></div>
-      <form class="form" id="grnForm">
-        <div class="field"><label>GRN date</label><input type="date" name="grnDate" value="${today()}" required></div>
-        <div class="field"><label>GRN number</label><input type="text" name="grnNumber" placeholder="GRN-5003" required></div>
-        <div class="field span2"><label>SO number</label>
-          <select name="soNumber" required>${soOptions || '<option value="">No sales orders yet</option>'}</select></div>
-        <div class="field span2"><label>SKU</label><select name="zsku" required>${skuOptions}</select></div>
-        <div class="field"><label>Qty received</label><input type="number" name="qtyReceived" min="0" required></div>
-        <div class="field"><label>Qty damaged/short</label><input type="number" name="qtyDamaged" min="0"></div>
-        <div class="field span2"><label>Notes</label><input type="text" name="notes" placeholder="optional"></div>
-        <div class="form-foot"><button class="btn primary" type="submit">Log GRN</button><span class="msg" id="grnMsg"></span></div>
-      </form>`;
-    document.getElementById('main').appendChild(manual);
-    document.getElementById('grnForm').onsubmit = async (ev) => {
-      ev.preventDefault();
-      const f = new FormData(ev.target);
-      const msg = document.getElementById('grnMsg');
-      msg.className='msg'; msg.textContent='Saving…';
-      try{
-        await apiPost('addGRN', Object.fromEntries(f));
-        msg.className='msg ok'; msg.textContent='GRN logged.';
-        ev.target.reset();
-      }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
-    };
-  }catch(e){ setPanel(errorState(e)); }
-}
 
 async function renderSalesFunnel(){
   $main.innerHTML = viewHead('Monthly Sales & Insights', 'Import Noon\'s Vantage sales funnel export. Aggregated per SKU, with the same insight logic as the sheet.') + panelShell('loading');
