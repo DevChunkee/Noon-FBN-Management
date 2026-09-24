@@ -1167,6 +1167,10 @@ async function renderCatalog(){
     const flagChip = (flag) => {
       if(flag === 'Low Margin') return `<span class="chip amber">Low Margin</span>`;
       if(flag === 'Discontinued') return `<span class="chip red">Discontinued</span>`;
+      if(flag === 'No Price') return `<span class="chip red">No Price</span>`;
+      if(flag === 'No Cost') return `<span class="chip amber">No Cost</span>`;
+      if(flag === 'No Outbound Fee') return `<span class="chip blue">No Outbound Fee</span>`;
+      if(flag === 'No Storage Cost') return `<span class="chip gray">No Storage Cost</span>`;
       if(flag === 'OK') return `<span class="chip green">OK</span>`;
       return '—';
     };
@@ -1212,6 +1216,8 @@ async function renderCatalog(){
       });
       return Array.from(new Set(subset.map(c => c[DIMS[dim].field]).filter(v => v))).sort();
     }
+    const CATALOG_PAGE_SIZE = 100;
+    let catalogPage = 1;
     function msFilterHtml(id, label, options, selected){
       return `
       <div class="msfilter" id="ms_${id}">
@@ -1244,7 +1250,8 @@ async function renderCatalog(){
       </div>
       <table>
         <thead><tr><th><input type="checkbox" id="catalogSelectAll" title="Select all shown rows"></th><th>SKU</th><th>Item</th><th>Brand</th><th>Supplier</th><th class="num">Cost</th><th class="num">Price</th><th class="num">Margin</th><th class="num">Internal WH</th><th class="num">Noon FBN</th><th>Status</th><th>Flag</th></tr></thead>
-        <tbody>${rows}</tbody></table>` : emptyState('No SKUs yet — click "Add new SKU" above.')}
+        <tbody>${rows}</tbody></table>
+      <div id="catalogPagination"></div>` : emptyState('No SKUs yet — click "Add new SKU" above.')}
     `);
     document.getElementById('catalogExportBtn').onclick = () => {
       const checked = Array.from(document.querySelectorAll('.catalogRowCheck:checked')).map(cb => cb.closest('tr').dataset.zsku);
@@ -1282,7 +1289,7 @@ async function renderCatalog(){
     function applyCatalogFilter(){
       const { brands: fb, suppliers: fs, flags: ff, internalStock: fi, noonStock: fn } = state.catalogFilters;
       const q = (state.catalogSearch||'').trim().toLowerCase();
-      let shown = 0;
+      const matched = [];
       document.querySelectorAll('tr[data-zsku]').forEach(tr => {
         let show = true;
         if(fb.length && !fb.includes(tr.dataset.brand)) show = false;
@@ -1291,18 +1298,30 @@ async function renderCatalog(){
         if(fi.length && !fi.includes(tr.dataset.internalstock)) show = false;
         if(fn.length && !fn.includes(tr.dataset.noonstock)) show = false;
         if(q && !(tr.dataset.zskusearch.includes(q) || tr.dataset.sku.includes(q) || tr.dataset.barcode.includes(q))) show = false;
-        tr.style.display = show ? '' : 'none';
-        if(show) shown++;
+        if(show) matched.push(tr); else tr.style.display = 'none';
       });
+      // Paginate the matched (filtered) set — only the current page's rows
+      // actually get shown; the rest stay in the DOM (hidden) so checkbox
+      // selection and other per-row state survive a page change.
+      catalogPage = clampPage(catalogPage, CATALOG_PAGE_SIZE, matched.length);
+      const start = (catalogPage - 1) * CATALOG_PAGE_SIZE;
+      matched.forEach((tr, i) => { tr.style.display = (i >= start && i < start + CATALOG_PAGE_SIZE) ? '' : 'none'; });
       const label = document.getElementById('rowCountLabel');
       const filtered = fb.length || fs.length || ff.length || fi.length || fn.length || q;
-      if(label) label.textContent = filtered ? `${shown} of ${state.catalog.length} SKUs (filtered)` : `${state.catalog.length} SKU${state.catalog.length===1?'':'s'}`;
+      if(label) label.textContent = filtered ? `${matched.length} of ${state.catalog.length} SKUs (filtered)` : `${state.catalog.length} SKU${state.catalog.length===1?'':'s'}`;
+      const pag = document.getElementById('catalogPagination');
+      if(pag) pag.outerHTML = paginationHtml('catalogPagination', catalogPage, CATALOG_PAGE_SIZE, matched.length, matched.length===1?'SKU':'SKUs');
+      const prev = document.getElementById('catalogPagination_prev');
+      const next = document.getElementById('catalogPagination_next');
+      if(prev) prev.onclick = () => { catalogPage--; applyCatalogFilter(); };
+      if(next) next.onclick = () => { catalogPage++; applyCatalogFilter(); };
       const selectAll = document.getElementById('catalogSelectAll');
       if(selectAll) selectAll.checked = false;
     }
     const catalogSearchInput = document.getElementById('catalogSearchInput');
     if(catalogSearchInput) catalogSearchInput.oninput = () => {
       state.catalogSearch = catalogSearchInput.value;
+      catalogPage = 1;
       applyCatalogFilter();
     };
     if(state.catalog.length){
@@ -1318,6 +1337,7 @@ async function renderCatalog(){
           cb.onchange = () => {
             state.catalogFilters[DIMS[dim].key] = Array.from(panel.querySelectorAll(`.ms_${dim}_cb:checked`)).map(c => c.value);
             setBtnLabel(dim);
+            catalogPage = 1;
             applyCatalogFilter();
             rebuildOtherPanels(dim);
           };
@@ -1677,7 +1697,8 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
       ${rows.length ? batchBar : ''}
       ${rows.length ? `<table>
         <thead><tr><th><input type="checkbox" id="selectAllCheck" title="Select all shown rows"></th><th>${mode === 'ship' ? 'ZSKU' : 'Barcode'}</th><th>Item</th><th class="num">${stockLabel}</th><th class="num">Weeks cover</th><th class="num">MOQ</th><th class="num">Qty</th></tr></thead>
-        <tbody>${body}</tbody></table>` : emptyState(`Nothing needs a qty right now — all ${allRows.length} tracked SKU${allRows.length===1?'':'s'} ${allRows.length===1?'is':'are'} covered.`)}
+        <tbody>${body}</tbody></table>
+      <div id="replenPagination"></div>` : emptyState(`Nothing needs a qty right now — all ${allRows.length} tracked SKU${allRows.length===1?'':'s'} ${allRows.length===1?'is':'are'} covered.`)}
     `);
     function updateSelCount(){
       const n = document.querySelectorAll('tr[data-zsku] .rowCheck:checked').length;
@@ -1702,6 +1723,27 @@ async function renderReplenishment(action, title, sub, qtyKey, suggestedKey, sto
     updateSelCount();
     const selectAllCheck = document.getElementById('selectAllCheck');
     if(selectAllCheck) selectAllCheck.onchange = () => setAllChecks(selectAllCheck.checked);
+
+    // Pagination — rows stay in the DOM (just hidden), so a checked box or
+    // an edited Qty on any page survives paging around before batch-adding.
+    if(rows.length){
+      const REPLEN_PAGE_SIZE = 100;
+      let replenPage = 1;
+      const dataRows = Array.from(document.querySelectorAll('tr[data-zsku]'));
+      const applyReplenPage = () => {
+        replenPage = clampPage(replenPage, REPLEN_PAGE_SIZE, dataRows.length);
+        const start = (replenPage - 1) * REPLEN_PAGE_SIZE;
+        dataRows.forEach((tr, i) => { tr.style.display = (i >= start && i < start + REPLEN_PAGE_SIZE) ? '' : 'none'; });
+        updateSelCount();
+        const pag = document.getElementById('replenPagination');
+        if(pag) pag.outerHTML = paginationHtml('replenPagination', replenPage, REPLEN_PAGE_SIZE, dataRows.length, dataRows.length===1?'SKU':'SKUs');
+        const prev = document.getElementById('replenPagination_prev');
+        const next = document.getElementById('replenPagination_next');
+        if(prev) prev.onclick = () => { replenPage--; applyReplenPage(); };
+        if(next) next.onclick = () => { replenPage++; applyReplenPage(); };
+      };
+      applyReplenPage();
+    }
     document.querySelectorAll('.copyZskuBtn').forEach(btn => {
       btn.onclick = async (e) => {
         e.stopPropagation();
@@ -1892,6 +1934,9 @@ async function renderSalesOrders(){
     const sorted = rows.slice().sort((a, b) => (b.ShipDate||'').localeCompare(a.ShipDate||''));
     const statusOptionsHtml = `<option value="">All statuses</option>` + SO_STATUSES.map(s => `<option value="${s.replace(/"/g,'&quot;')}">${s}</option>`).join('');
 
+    const SO_PAGE_SIZE = 20;
+    let soPage = 1;
+    let soCurrentList = sorted;
     const renderRows = (list) => {
       const body = list.length ? list.map(r => `
         <tr class="clickRow" data-so="${r.SONumber}">
@@ -1910,6 +1955,17 @@ async function renderSalesOrders(){
         tr.onclick = () => { state.selectedSO = tr.dataset.so; renderSalesOrderDetail(); };
       });
     };
+    const renderSOPage = () => {
+      soPage = clampPage(soPage, SO_PAGE_SIZE, soCurrentList.length);
+      const start = (soPage - 1) * SO_PAGE_SIZE;
+      renderRows(soCurrentList.slice(start, start + SO_PAGE_SIZE));
+      const pag = document.getElementById('soPagination');
+      if(pag) pag.outerHTML = paginationHtml('soPagination', soPage, SO_PAGE_SIZE, soCurrentList.length, soCurrentList.length===1?'order':'orders');
+      const prev = document.getElementById('soPagination_prev');
+      const next = document.getElementById('soPagination_next');
+      if(prev) prev.onclick = () => { soPage--; renderSOPage(); };
+      if(next) next.onclick = () => { soPage++; renderSOPage(); };
+    };
 
     setPanel(`
       <div class="panel-head"><h3>${rows.length} order${rows.length===1?'':'s'}</h3>
@@ -1926,7 +1982,8 @@ async function renderSalesOrders(){
       </div>
       <table>
         <thead><tr><th>SO</th><th>Creation date</th><th>Scheduled</th><th class="num">Planned</th><th class="num">Confirmed</th><th class="num">Delivered</th><th>Status</th></tr></thead>
-        <tbody id="soListBody"></tbody></table>` : emptyState('No sales orders yet — click "Create new Sales Order" above.')}
+        <tbody id="soListBody"></tbody></table>
+      <div id="soPagination"></div>` : emptyState('No sales orders yet — click "Create new Sales Order" above.')}
     `);
 
     if(rows.length){
@@ -1940,7 +1997,9 @@ async function renderSalesOrders(){
         // cancelled orders; picking any other status filters to just that.
         let list = statusVal ? sorted.filter(r => r.Status === statusVal) : sorted.filter(r => r.Status !== 'Cancelled');
         if(q) list = list.filter(r => (r.SONumber||'').toLowerCase().includes(q));
-        renderRows(list);
+        soCurrentList = list;
+        soPage = 1;
+        renderSOPage();
       };
       searchInput.oninput = applyFilter;
       statusFilter.onchange = applyFilter;
@@ -2291,6 +2350,7 @@ async function renderSalesOrderDetail(){
   document.getElementById('backToSO').onclick = (e) => { e.preventDefault(); state.selectedSO = null; renderSalesOrders(); };
   try{
     const catalog = await ensureCatalog();
+    const activeCatalog = catalog.filter(c => c.Status !== 'Discontinued'); // Discontinued items can't be added to new orders — existing lines still display fine off the full catalog
     const [orders, lines] = await Promise.all([apiGet('salesOrder'), apiGet('salesOrderLine')]);
     if(myToken !== soRenderToken) return; // a newer render started while we were fetching — don't append stale panels
     const header = orders.find(o => o.SONumber === soNumber);
@@ -2566,6 +2626,7 @@ async function renderSalesOrderDetail(){
         </div></div>
       ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Planned</th>${showAvailableCol ? '<th class="num">Available</th>' : ''}<th class="num">Selling price</th><th class="num">Line total</th>${showConfirmedCol ? '<th class="num">Confirmed</th>' : ''}${showDeliveredCol ? '<th class="num">Delivered</th>' : ''}<th>Shortage reason</th><th></th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
+        <div id="soLinesPagination"></div>
         <div class="batch-bar" style="flex-wrap:wrap;border-top:1px solid var(--border);font-weight:600;">
           <label>Total planned qty</label><span>${fmt(totalPlannedQty)}</span>
           <label>Value</label><span>${fmt(totalPlannedValue)}</span>
@@ -2664,9 +2725,30 @@ async function renderSalesOrderDetail(){
       };
     }
 
+    // Line-items pagination — rows stay in the DOM (just hidden), so staged
+    // Planned-qty edits and pending-deletes on any page survive paging
+    // around before Save is clicked.
+    if(myLines.length){
+      const SO_LINES_PAGE_SIZE = 15;
+      let soLinesPage = 1;
+      const lineRows = Array.from(document.querySelectorAll('tr[data-linenum]'));
+      const applySOLinesPage = () => {
+        soLinesPage = clampPage(soLinesPage, SO_LINES_PAGE_SIZE, lineRows.length);
+        const start = (soLinesPage - 1) * SO_LINES_PAGE_SIZE;
+        lineRows.forEach((tr, i) => { tr.style.display = (i >= start && i < start + SO_LINES_PAGE_SIZE) ? '' : 'none'; });
+        const pag = document.getElementById('soLinesPagination');
+        if(pag) pag.outerHTML = paginationHtml('soLinesPagination', soLinesPage, SO_LINES_PAGE_SIZE, lineRows.length, lineRows.length===1?'line':'lines');
+        const prev = document.getElementById('soLinesPagination_prev');
+        const next = document.getElementById('soLinesPagination_next');
+        if(prev) prev.onclick = () => { soLinesPage--; applySOLinesPage(); };
+        if(next) next.onclick = () => { soLinesPage++; applySOLinesPage(); };
+      };
+      applySOLinesPage();
+    }
+
     if(!isOpen){ return; } // "Add items" only applies to a draft (Open) order — once Confirm has moved it on, items are locked in and edited via the line table itself
 
-    const itemOptionsHtml = catalog.map(c => `<option value="${c.SKU}" label="${(c.ItemName||'').replace(/"/g,'&quot;')}">`).join('');
+    const itemOptionsHtml = activeCatalog.map(c => `<option value="${c.SKU}" label="${(c.ItemName||'').replace(/"/g,'&quot;')}">`).join('');
 
     const addPanel = document.createElement('div');
     addPanel.className = 'panel';
@@ -2730,7 +2812,7 @@ async function renderSalesOrderDetail(){
         const qtyInput = tr.querySelector('.soQtyInput');
         const raw = itemInput.value.trim();
         if(!raw && !qtyInput.value) return; // blank trailing row — ignore
-        const zsku = resolveZsku(raw, catalog);
+        const zsku = resolveZsku(raw, activeCatalog);
         if(!zsku){
           hadError = true;
           itemInput.style.borderColor = 'var(--red)';
@@ -2741,7 +2823,7 @@ async function renderSalesOrderDetail(){
         if(!raw || qty <= 0) return;
         items.push({ zsku, qtySent: qty });
       });
-      if(hadError){ msg.className = 'msg err'; msg.textContent = 'Fix the highlighted item(s) — not found in the catalog.'; return; }
+      if(hadError){ msg.className = 'msg err'; msg.textContent = 'Fix the highlighted item(s) — not found in the catalog, or discontinued.'; return; }
       if(!items.length){ msg.className = 'msg err'; msg.textContent = 'Enter at least one item with a qty.'; return; }
       msg.className='msg'; msg.textContent='Saving…';
       try{
@@ -2750,7 +2832,7 @@ async function renderSalesOrderDetail(){
       }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
     };
 
-    document.getElementById('soShowImportBtn').onclick = () => openSOImportModal(soNumber, header, catalog);
+    document.getElementById('soShowImportBtn').onclick = () => openSOImportModal(soNumber, header, activeCatalog);
   }catch(e){ setPanel(errorState(e)); }
 }
 
@@ -2825,6 +2907,9 @@ async function renderPurchaseOrders(){
     const sorted = rows.slice().sort((a, b) => (b.PODate||'').localeCompare(a.PODate||''));
     const statusOptionsHtml = `<option value="">All statuses</option>` + PO_STATUSES.map(s => `<option value="${s.replace(/"/g,'&quot;')}">${s}</option>`).join('');
 
+    const PO_PAGE_SIZE = 20;
+    let poPage = 1;
+    let poCurrentList = sorted;
     const renderRows = (list) => {
       const body = list.length ? list.map(r => `
         <tr class="clickRow" data-po="${r.PONumber}">
@@ -2838,6 +2923,17 @@ async function renderPurchaseOrders(){
         tr.style.cursor = 'pointer';
         tr.onclick = () => { state.selectedPO = tr.dataset.po; renderPurchaseOrderDetail(); };
       });
+    };
+    const renderPOPage = () => {
+      poPage = clampPage(poPage, PO_PAGE_SIZE, poCurrentList.length);
+      const start = (poPage - 1) * PO_PAGE_SIZE;
+      renderRows(poCurrentList.slice(start, start + PO_PAGE_SIZE));
+      const pag = document.getElementById('poPagination');
+      if(pag) pag.outerHTML = paginationHtml('poPagination', poPage, PO_PAGE_SIZE, poCurrentList.length, poCurrentList.length===1?'order':'orders');
+      const prev = document.getElementById('poPagination_prev');
+      const next = document.getElementById('poPagination_next');
+      if(prev) prev.onclick = () => { poPage--; renderPOPage(); };
+      if(next) next.onclick = () => { poPage++; renderPOPage(); };
     };
 
     setPanel(`
@@ -2855,7 +2951,8 @@ async function renderPurchaseOrders(){
       </div>
       <table>
         <thead><tr><th>PO</th><th>Quotation #</th><th>Invoice #</th><th>Creation date</th><th>Received date</th><th>Supplier</th><th class="num">Units</th><th class="num">Cost</th><th>Status</th></tr></thead>
-        <tbody id="poListBody"></tbody></table>` : emptyState('No purchase orders yet — click "Create new Purchase Order" above.')}
+        <tbody id="poListBody"></tbody></table>
+      <div id="poPagination"></div>` : emptyState('No purchase orders yet — click "Create new Purchase Order" above.')}
     `);
 
     if(rows.length){
@@ -2872,7 +2969,9 @@ async function renderPurchaseOrders(){
           (r.PONumber||'').toLowerCase().includes(q) ||
           (r.QuotationNumber||'').toLowerCase().includes(q) ||
           (r.InvoiceNumber||'').toLowerCase().includes(q));
-        renderRows(list);
+        poCurrentList = list;
+        poPage = 1;
+        renderPOPage();
       };
       searchInput.oninput = applyFilter;
       statusFilter.onchange = applyFilter;
@@ -3050,6 +3149,7 @@ async function renderPurchaseOrderDetail(){
   document.getElementById('backToPO').onclick = (e) => { e.preventDefault(); state.selectedPO = null; renderPurchaseOrders(); };
   try{
     const catalog = await ensureCatalog();
+    const activeCatalog = catalog.filter(c => c.Status !== 'Discontinued'); // Discontinued items can't be added to new orders — existing lines still display fine off the full catalog
     const [orders, lines] = await Promise.all([apiGet('purchaseOrder'), apiGet('purchaseOrderLine')]);
     if(myToken !== poRenderToken) return; // a newer render started while we were fetching — don't append stale panels
     const header = orders.find(o => o.PONumber === poNumber);
@@ -3307,6 +3407,7 @@ async function renderPurchaseOrderDetail(){
         </div></div>
       ${myLines.length ? `<table><thead><tr><th>SKU</th><th>Item name</th><th class="num">Qty ordered</th><th class="num">Unit cost</th><th class="num">Line total</th>${showConfirmedCol ? '<th class="num">Confirmed qty</th>' : ''}${showReceivedCol ? '<th class="num">Qty received</th>' : ''}<th></th></tr></thead>
         <tbody>${rowsHtml}</tbody></table>
+        <div id="poLinesPagination"></div>
         <div class="batch-bar" style="flex-wrap:wrap;border-top:1px solid var(--border);font-weight:600;">
           <label>Total qty ordered</label><span>${fmt(totalQtyOrdered)}</span>
           <label>Value</label><span>${fmt(totalOrderedValue)}</span>
@@ -3377,6 +3478,27 @@ async function renderPurchaseOrderDetail(){
       };
     });
 
+    // Line-items pagination — rows stay in the DOM (just hidden), so any
+    // unsaved Qty ordered/Confirmed/Received edits on any page survive
+    // paging around before Save changes is clicked.
+    if(myLines.length){
+      const PO_LINES_PAGE_SIZE = 15;
+      let poLinesPage = 1;
+      const lineRows = Array.from(document.querySelectorAll('tr[data-linenum]'));
+      const applyPOLinesPage = () => {
+        poLinesPage = clampPage(poLinesPage, PO_LINES_PAGE_SIZE, lineRows.length);
+        const start = (poLinesPage - 1) * PO_LINES_PAGE_SIZE;
+        lineRows.forEach((tr, i) => { tr.style.display = (i >= start && i < start + PO_LINES_PAGE_SIZE) ? '' : 'none'; });
+        const pag = document.getElementById('poLinesPagination');
+        if(pag) pag.outerHTML = paginationHtml('poLinesPagination', poLinesPage, PO_LINES_PAGE_SIZE, lineRows.length, lineRows.length===1?'line':'lines');
+        const prev = document.getElementById('poLinesPagination_prev');
+        const next = document.getElementById('poLinesPagination_next');
+        if(prev) prev.onclick = () => { poLinesPage--; applyPOLinesPage(); };
+        if(next) next.onclick = () => { poLinesPage++; applyPOLinesPage(); };
+      };
+      applyPOLinesPage();
+    }
+
     if(!isOpen){ return; } // "Add items" only applies to a draft (Open) order — once Confirm Order has moved it on, items are locked in and edited via the line table itself
 
     // Item pool for the dropdown: prefer items already tagged with this PO's
@@ -3384,8 +3506,8 @@ async function renderPurchaseOrderDetail(){
     // whole catalog if that supplier has no tagged items (or the PO has no
     // supplier set) so the field is never empty/useless.
     const supplierName = header ? header.Supplier : '';
-    let itemPool = supplierName ? catalog.filter(c => c.Supplier === supplierName) : catalog;
-    if(!itemPool.length) itemPool = catalog;
+    let itemPool = supplierName ? activeCatalog.filter(c => c.Supplier === supplierName) : activeCatalog;
+    if(!itemPool.length) itemPool = activeCatalog;
     const itemOptionsHtml = itemPool.map(c => `<option value="${c.SKU}" label="${(c.ItemName||'').replace(/"/g,'&quot;')}">`).join('');
 
     const addPanel = document.createElement('div');
@@ -3450,7 +3572,7 @@ async function renderPurchaseOrderDetail(){
         const qtyInput = tr.querySelector('.poQtyInput');
         const raw = itemInput.value.trim();
         if(!raw && !qtyInput.value) return; // blank trailing row — ignore
-        const zsku = resolveZsku(raw, catalog);
+        const zsku = resolveZsku(raw, activeCatalog);
         if(!zsku){
           hadError = true;
           itemInput.style.borderColor = 'var(--red)';
@@ -3461,7 +3583,7 @@ async function renderPurchaseOrderDetail(){
         if(!raw || qty <= 0) return;
         items.push({ zsku, qtyOrdered: qty });
       });
-      if(hadError){ msg.className = 'msg err'; msg.textContent = 'Fix the highlighted item(s) — not found in the catalog.'; return; }
+      if(hadError){ msg.className = 'msg err'; msg.textContent = 'Fix the highlighted item(s) — not found in the catalog, or discontinued.'; return; }
       if(!items.length){ msg.className = 'msg err'; msg.textContent = 'Enter at least one item with a qty.'; return; }
       msg.className='msg'; msg.textContent='Saving…';
       try{
@@ -3473,7 +3595,7 @@ async function renderPurchaseOrderDetail(){
       }catch(e){ msg.className='msg err'; msg.textContent = e.message; }
     };
 
-    document.getElementById('poShowImportBtn').onclick = () => openPOImportModal(poNumber, header, catalog);
+    document.getElementById('poShowImportBtn').onclick = () => openPOImportModal(poNumber, header, activeCatalog);
   }catch(e){ setPanel(errorState(e)); }
 }
 
@@ -3642,7 +3764,8 @@ async function renderAdjust(){
   $main.innerHTML = viewHead('Log an adjustment', 'Damage, returns, and manual corrections to Internal WH stock. Flows straight into On Hand Qty.') + panelShell('loading');
   try{
     const catalog = await ensureCatalog();
-    const options = catalog.map(c => `<option value="${c.zSKU}">${c.SKU} — ${c.ItemName}</option>`).join('');
+    const activeCatalog = catalog.filter(c => c.Status !== 'Discontinued'); // Discontinued items can't be adjusted into new records
+    const options = activeCatalog.map(c => `<option value="${c.zSKU}">${c.SKU} — ${c.ItemName}</option>`).join('');
     setPanel(`
       <div class="panel-head"><h3>Import a batch of adjustments</h3>
         <div style="display:flex;gap:8px;">
@@ -3699,7 +3822,7 @@ async function renderAdjust(){
           const validTypes = ['Damage / Write-off','Return to Stock','Manual Addition','Manual Deduction'];
           const items = []; let skipped = 0;
           parsed.forEach(r => {
-            const z = resolveZsku(r[skuCol], catalog);
+            const z = resolveZsku(r[skuCol], activeCatalog);
             const type = validTypes.find(t => t.toLowerCase() === String(r[typeCol]||'').trim().toLowerCase());
             const qty = Number(r[qtyCol]||0);
             if(!z || !type || qty <= 0){ skipped++; return; }
@@ -4151,6 +4274,30 @@ function panelShell(inner){ return `<div class="panel" id="panelBody">${inner===
 function setPanel(html){ const p = document.getElementById('panelBody'); if(p) p.outerHTML = `<div class="panel" id="panelBody">${html}</div>`; }
 function emptyState(msg){ return `<div class="empty">${msg}</div>`; }
 function errorState(e){ return `<div class="empty" style="color:var(--red)">Couldn't load: ${e.message}</div>`; }
+
+// ---------------------------------------------------------------------------
+// Pagination — a small shared helper used by every list/line-items screen
+// that needs a page-size cap. Two flavors of caller:
+//  1) "reslice" screens (Sales Orders, Purchase Orders lists) rebuild their
+//     tbody from a plain JS array each time the page changes.
+//  2) "show/hide" screens (Master Catalog, SO/PO line items, replenishment)
+//     already have every row in the DOM and just toggle display per page —
+//     this keeps existing per-row state (checkboxes, staged edits, dirty
+//     inputs) intact when moving between pages.
+// Both flavors share the same controls markup and page-clamping logic.
+function paginationHtml(id, page, pageSize, total, itemLabel){
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  if(totalPages <= 1) return '';
+  return `<div class="pagination" id="${id}" style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-top:1px solid var(--border);">
+    <button type="button" class="btn" id="${id}_prev" ${page<=1?'disabled':''}>‹ Prev</button>
+    <span class="msg" style="color:var(--text-dim);">Page ${page} of ${totalPages} (${total} ${itemLabel})</span>
+    <button type="button" class="btn" id="${id}_next" ${page>=totalPages?'disabled':''}>Next ›</button>
+  </div>`;
+}
+function clampPage(page, pageSize, total){
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  return Math.min(Math.max(1, page), totalPages);
+}
 
 document.querySelectorAll('.nav-item').forEach(n => n.onclick = () => switchView(n.dataset.view));
 
